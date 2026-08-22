@@ -51,7 +51,8 @@ st.markdown("""
         padding: 16px 18px; height: 100%;
     }
     .kpi .v { font-size: 30px; font-weight: 700; line-height: 1.1; }
-    .kpi .l { font-size: 11px; letter-spacing: .8px; text-transform: uppercase; opacity: .6; margin-top: 6px; }
+    .kpi .l { font-size: 11px; letter-spacing: .8px; text-transform: uppercase;
+              opacity: .6; margin-top: 6px; }
     .kpi .s { font-size: 12px; opacity: .5; margin-top: 2px; }
 
     .k-low  .v { color: #22c55e; }
@@ -228,7 +229,8 @@ with tab_sellers:
         c2.caption(f"Showing top {len(df)} sellers by risk score "
                    f"(of {summary['total_sellers']:,} monitored)" if summary else "")
 
-        view = df[["seller_id", "seller_city", "seller_state", "risk_score", "risk_band", "model_name"]].copy()
+        view = df[["seller_id", "seller_city", "seller_state",
+                   "risk_score", "risk_band", "model_name"]].copy()
         view.columns = ["Seller ID", "City", "State", "Risk", "Band", "Model"]
 
         st.dataframe(

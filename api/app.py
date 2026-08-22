@@ -6,7 +6,7 @@ Role
 Thin routing layer exposing SENTRIX's intelligence over HTTP. Every
 endpoint CALLS a module built in earlier phases — it never implements
 model, database, or RAG logic itself. This separation is what lets the
-Streamlit dashboard (Phase 9), or any other client, consume the same
+Streamlit dashboard, or any other client, consume the same
 predictions without duplicating logic.
 
 Endpoints
@@ -15,7 +15,7 @@ GET  /health              — liveness check, reports which model is live
 GET  /sellers              — all sellers with their current risk score
 GET  /explain/{seller_id}  — SHAP explanation for one seller
 POST /chat                 — RAG-grounded natural-language Q&A
-GET  /metrics               — the Phase 5 model comparison table
+GET  /metrics               — the model comparison table
 
 Run with:
     uvicorn api.app:app --reload --port 8000
@@ -77,7 +77,7 @@ def health():
 @app.get("/sellers", response_model=list[SellerRiskResponse])
 def get_sellers(risk_band: str | None = None, limit: int = 500):
     """
-    All sellers with their current risk score, as stored by Phase 5's
+    All sellers with their current risk score, as written by
     generate_predictions.py. Optionally filter by risk_band
     (low / medium / high / critical).
     """
@@ -144,14 +144,17 @@ def chat(request: ChatRequest):
 
 @app.get("/metrics", response_model=ModelMetricsResponse)
 def get_metrics():
-    """The Phase 5 model comparison table — every model's evaluation metrics."""
+    """The model comparison table — every model's evaluation metrics."""
     try:
         eval_dir = get_project_root() / "artifacts" / "evaluation"
         comparison_path = eval_dir / "model_comparison.csv"
         summary_path = eval_dir / "best_model_summary.joblib"
 
         if not comparison_path.exists():
-            raise HTTPException(status_code=404, detail="No evaluation results found. Run Phase 5 first.")
+            raise HTTPException(
+                status_code=404,
+                detail="No evaluation results found. Run src.evaluation.run_evaluation first.",
+            )
 
         comparison = pd.read_csv(comparison_path)
         import joblib
@@ -163,8 +166,6 @@ def get_metrics():
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Evaluation artifacts not found.")
-
-
 
 
 @app.get("/summary", response_model=SummaryResponse)
@@ -195,7 +196,8 @@ def get_summary():
         best_model, best_pr_auc = None, None
         try:
             import joblib
-            summary = joblib.load(get_project_root() / "artifacts" / "evaluation" / "best_model_summary.joblib")
+            summary_path = get_project_root() / "artifacts" / "evaluation" / "best_model_summary.joblib"
+            summary = joblib.load(summary_path)
             best_model = summary["best_model"]
             best_pr_auc = float(summary["metrics"]["pr_auc"])
         except Exception:

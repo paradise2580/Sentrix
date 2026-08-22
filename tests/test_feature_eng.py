@@ -1,7 +1,5 @@
 """tests/test_feature_eng.py — unit tests for the seller-day feature builder."""
 
-import numpy as np
-import pandas as pd
 
 from src.preprocessing.feature_eng import (
     build_seller_day_panel, add_delivery_history_features, attach_label,

@@ -4,7 +4,7 @@ src/preprocessing/embedder.py
 Role
 ----
 Converts text documents (news articles, port bulletins, disruption
-reports) into vector embeddings for the RAG layer (Phase 7's ChromaDB
+reports) into vector embeddings for the RAG layer (the ChromaDB
 index and retriever).
 
 Dual backend

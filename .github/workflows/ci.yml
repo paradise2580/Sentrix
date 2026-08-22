@@ -1,15 +1,62 @@
 name: CI
 
-# Runs on every push and pull request — nothing merges unless this passes.
 on:
   push:
     branches: ["**"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
 
 jobs:
-  test:
+  # ---------------------------------------------------------------------------
+  # Fast feedback on every push: lint + the unit tests that need no
+  # infrastructure. This is the job that has to stay under two minutes,
+  # because a check nobody waits for is a check nobody reads.
+  # ---------------------------------------------------------------------------
+  unit:
+    name: Lint + unit tests
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (flake8)
+        run: flake8 src/ api/ tests/ --max-line-length=110 --extend-ignore=E203,W503
+
+      - name: Unit tests
+        env:
+          MYSQL_PASSWORD: unused-no-db-in-this-job
+        run: pytest tests/ -v --tb=short
+
+      - name: Split-integrity tests
+        # Called out separately because these are the tests that guard the
+        # project's central correctness claim — no evaluation-period
+        # information reaches the model. If they go red, nothing downstream
+        # is worth reading.
+        env:
+          MYSQL_PASSWORD: unused-no-db-in-this-job
+        run: pytest tests/test_split_integrity.py -v
+
+  # ---------------------------------------------------------------------------
+  # Full retrain + model gate. Runs on main and on demand rather than on
+  # every branch push: it stands up MySQL, loads ~100k real orders, trains
+  # six models and re-evaluates them, which is minutes, not seconds.
+  # ---------------------------------------------------------------------------
+  pipeline:
+    name: End-to-end pipeline + model gate
+    runs-on: ubuntu-latest
+    needs: unit
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
     services:
       mysql:
@@ -19,72 +66,75 @@ jobs:
           MYSQL_DATABASE: sentrix
           MYSQL_USER: sentrix_user
           MYSQL_PASSWORD: sentrix_pass
-        ports:
-          - 3306:3306
+        ports: ["3306:3306"]
         options: >-
           --health-cmd="mysqladmin ping"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    env:
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_USER: sentrix_user
+      MYSQL_PASSWORD: sentrix_pass
+      MYSQL_DATABASE: sentrix
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: "pip"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Lint check (flake8)
-        run: flake8 src/ api/ --max-line-length=110 --extend-ignore=E203,W503
-        continue-on-error: true   # style issues warn, don't block — logic issues below do
+      - name: Pull DVC-tracked data
+        run: |
+          dvc pull --allow-missing || \
+            echo "::warning::DVC remote unavailable — falling back to files in the repo"
 
       - name: Wait for MySQL
         run: |
           for i in $(seq 1 15); do
-            mysqladmin ping -h 127.0.0.1 -u sentrix_user -psentrix_pass --silent && break
+            mysqladmin ping -h 127.0.0.1 -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --silent && break
             sleep 2
           done
 
-      - name: Set up database schema
-        env:
-          MYSQL_HOST: 127.0.0.1
+      - name: Create schema
         run: python -m src.ingestion.schema
 
       - name: Load real Olist data
-        env:
-          MYSQL_HOST: 127.0.0.1
         run: python -m src.ingestion.olist_loader
 
-      - name: Generate synthetic external-signal layer
+      - name: Build external-signal layer (real FRED + flagged synthetic)
         env:
-          MYSQL_HOST: 127.0.0.1
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python -m src.ingestion.synthetic_signals
 
-      - name: Run unit + integration tests
-        env:
-          MYSQL_HOST: 127.0.0.1
+      - name: Integration tests against a live database
         run: pytest tests/ -v --tb=short
 
       - name: Build feature table
-        env:
-          MYSQL_HOST: 127.0.0.1
         run: python scripts/build_features.py
 
-      - name: Train all 6 models
-        env:
-          MYSQL_HOST: 127.0.0.1
+      - name: Train all models
         run: python -m src.models.trainer --stages baseline boosting ensemble lstm
 
-      - name: Run full evaluation (produces the summary the gate checks)
-        env:
-          MYSQL_HOST: 127.0.0.1
+      - name: Evaluate, calibrate, pick the operating point
         run: python -m src.evaluation.run_evaluation
 
       - name: Model performance gate
+        # Fails the build if the champion drops below the PR-AUC floor in
+        # config.yaml. Unit tests prove the code runs; this proves the model
+        # it produces is still worth shipping.
         run: python scripts/validate_model.py
+
+      - name: Upload evaluation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation
+          path: artifacts/evaluation/
+          if-no-files-found: warn

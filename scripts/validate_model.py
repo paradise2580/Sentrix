@@ -3,7 +3,7 @@ scripts/validate_model.py
 
 Role
 ----
-The model-performance gate CI runs on every push. Loads Phase 5's
+The model-performance gate CI runs on every push. Loads the
 evaluation results and checks the best model's PR-AUC against the
 threshold in config.yaml (monitoring.pr_auc_gate). Exits non-zero — which
 fails the GitHub Actions job — if the model doesn't clear the bar.
@@ -38,7 +38,8 @@ def validate_model() -> bool:
     summary_path = eval_dir / "best_model_summary.joblib"
 
     if not summary_path.exists():
-        print(f"FAIL: no evaluation summary found at {summary_path}. Run Phase 5 evaluation first.")
+        print(f"FAIL: no evaluation summary at {summary_path}. "
+              f"Run src.evaluation.run_evaluation first.")
         return False
 
     summary = joblib.load(summary_path)

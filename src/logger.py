@@ -16,7 +16,6 @@ Usage in any module
 """
 
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 

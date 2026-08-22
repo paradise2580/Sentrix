@@ -8,7 +8,7 @@ pattern, a supplier base that's grown, a feature distribution that's
 moved). This module compares a "reference" slice of the feature table
 (what the model was trained on) against a "current" slice (recent data)
 and flags data drift — the same check a production ML system runs on a
-schedule (via Phase 13's Airflow DAG) to know when retraining is needed.
+schedule (via the Airflow DAG) to know when retraining is needed.
 """
 
 from pathlib import Path
@@ -77,7 +77,7 @@ def check_drift_from_feature_table(feature_table_path: str | None = None) -> dic
     """
     End-to-end: load the saved feature table, split it chronologically
     into reference/current, run the drift report. This is the function
-    Phase 13's Airflow DAG calls on its schedule.
+    the Airflow DAG calls on its schedule.
     """
     try:
         cfg = load_config()
@@ -104,7 +104,7 @@ def summarize_drift(raw_result: dict) -> dict:
     """
     Extracts a clean, human-readable summary from Evidently's raw snapshot
     dict: how many features drifted, and which ones, ranked by severity.
-    This is what an Airflow task (Phase 13) would check to decide whether
+    This is what an Airflow task would check to decide whether
     to trigger a retraining alert.
     """
     metrics = raw_result.get("metrics", [])

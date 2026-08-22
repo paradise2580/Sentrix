@@ -5,7 +5,7 @@ Role
 ----
 Fetches live external signals from free-tier APIs. Each source is its own
 method so they can be tested, scheduled, and rate-limited independently
-(this module is what Phase 13's Airflow DAG calls every 6 hours).
+(this module is what the Airflow DAG calls every 6 hours).
 
 Design note
 -----------
@@ -132,7 +132,7 @@ class SignalScraper:
         """
         Fetch every signal type for a list of suppliers, e.g.
         [{"supplier_id": 1, "region": "Shanghai, China", "lat": 31.23, "lon": 121.47}, ...]
-        This is the entry point Phase 13's Airflow DAG calls.
+        This is the entry point the Airflow DAG calls.
         """
         results = {"news": [], "weather": [], "commodity": [], "port": []}
         for s in suppliers:

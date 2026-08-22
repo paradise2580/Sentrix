@@ -16,7 +16,7 @@ Logistic Regression  — the regulatory-friendly baseline. Simple, fast,
 Random Forest         — a stronger tree baseline that captures
                         non-linear interactions the linear model misses.
 
-Class imbalance (confirmed in Phase 3 EDA: ~22% positive) is handled via
+Class imbalance is handled via
 class_weight="balanced" in both models — the config-driven default rather
 than a hardcoded assumption.
 """

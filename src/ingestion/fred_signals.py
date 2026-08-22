@@ -44,7 +44,6 @@ pipeline never breaks. Provenance is recorded per row in MySQL
 """
 
 import os
-import numpy as np
 import pandas as pd
 import requests
 from dotenv import load_dotenv

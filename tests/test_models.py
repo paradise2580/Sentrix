@@ -2,7 +2,7 @@
 tests/test_models.py — unit tests for src/models/baseline.py, boosting.py,
 ensemble.py. Uses a small synthetic feature table (sample_feature_table
 fixture) for fast smoke-testing of the fit/predict wiring — NOT a full
-training run on the real 64,800-row table (that's Phase 4's job, run
+training run on the real feature table (that's the trainer's job, run
 explicitly via the trainer, not on every test invocation).
 """
 

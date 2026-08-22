@@ -6,7 +6,7 @@ Role
 For every prediction, SHAP tells us WHICH features drove the risk score
 up or down. This turns a black-box probability into an actionable,
 defensible explanation — and, critically, its output feeds directly into
-the RAG chat layer in Phase 7, so a user asking "why is Supplier X risky?"
+the RAG chat layer, so a user asking "why is Supplier X risky?"
 gets an answer grounded in the model's actual reasoning, not a guess.
 """
 
@@ -27,7 +27,7 @@ def build_explainer(model, background: np.ndarray | None = None):
 
     TreeExplainer  — exact and fast for tree ensembles (RF / XGBoost / LightGBM).
     LinearExplainer — exact for linear models (Logistic Regression). Needed
-                      because Phase 5's evaluation on real Olist data selected
+                      because evaluation on the real Olist data selected
                       Logistic Regression as the best model, and TreeExplainer
                       cannot explain it.
     KernelExplainer — model-agnostic fallback (slow; used only if neither fits).

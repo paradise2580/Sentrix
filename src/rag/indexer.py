@@ -9,15 +9,14 @@ or TF-IDF fallback), and stores them in ChromaDB.
 
 Document sources indexed
 -------------------------
-- News/signal text generated during ingestion (Phase 1)
-- SHAP explanations from Phase 5 (turned into readable sentences), so the
+- News/signal text generated during ingestion
+- SHAP explanations from evaluation (turned into readable sentences), so the
   RAG chat can cite the MODEL's own reasoning, not just raw news
 - Supplier metadata (region, category, reliability) for grounding
 """
 
 import json
 import chromadb
-import pandas as pd
 
 from src.config_loader import load_config, get_project_root
 from src.preprocessing.embedder import embed_texts
@@ -51,7 +50,7 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 def build_documents_from_predictions() -> list[dict]:
     """
-    Turns each seller's stored prediction (Phase 5's output in MySQL)
+    Turns each seller's stored prediction (the predictions table in MySQL)
     into a readable text document — this is what lets the RAG chat answer
     "why is Supplier X risky?" grounded in the model's actual SHAP output.
     """

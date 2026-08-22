@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 import requests
 
 DASHBOARD = Path(__file__).resolve().parent.parent / "frontend" / "dashboard.py"

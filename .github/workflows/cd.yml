@@ -37,7 +37,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Deployment step (Phase 14) — placeholder until a target environment
+      # Deployment step — placeholder until a target environment
       # (AWS EC2/ECS, Streamlit Community Cloud, etc.) is provisioned.
       # Example for EC2 via SSH:
       #
