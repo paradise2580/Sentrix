@@ -45,3 +45,7 @@ logs/*
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Local run artifacts
+*.zip
+train.log
