@@ -16,12 +16,12 @@ Two things this module is careful about
    an unscaled `days_since_last_late` of 9999 next to a `late_rate` of
    0.08 and saturate the gates on the first forward pass.
 
-2. It reports WHICH rows it scored. A sequence model cannot score a
-   seller's first `seq_len` days, so it is structurally evaluated on a
-   subset of the test set. Returning that index lets the evaluator score
-   every other model on the identical subset — without it, PR-AUC values
-   computed over different row sets get printed in one ranked table and
-   the ranking means nothing.
+2. It scores EVERY row and reports which rows it scored. Sequences are
+   left-padded (see SupplierSequenceDataset) so a seller with three days
+   of history still gets a prediction, and the returned index lets the
+   evaluator line every model up on identical rows. Without that, PR-AUC
+   values computed over different row sets end up printed in one ranked
+   table, and the ranking means nothing.
 """
 
 import numpy as np
@@ -45,6 +45,27 @@ class SupplierSequenceDataset(Dataset):
     Fixed-length sliding-window sequences per seller, so the LSTM sees a
     (seq_len, n_features) tensor per sample instead of a single row.
 
+    Sequences are LEFT-PADDED
+    -------------------------
+    A seller's day 3 has only two prior days of history, not thirty. The
+    obvious handling — skip any row without a full window — has two costs
+    that are easy to miss:
+
+    1. It silently shrinks the evaluation set. Dropping every seller's
+       first 30 days removed 39% of the test block here (76,815 rows down
+       to 46,715), and the rows it removed were not a random sample:
+       early seller-days carry a higher late rate, so the surviving base
+       rate fell from 16.8% to 15.0%. Every model was then compared on
+       that smaller, easier subset.
+    2. It cannot score a new seller at all, which is precisely when a
+       delivery-risk score is most useful.
+
+    So short windows are padded at the FRONT with zeros. The features are
+    already standardised when they reach here, so a zero row is the
+    training mean — i.e. "no information", which is exactly what an
+    unobserved day is. Every row in every block gets a prediction, and the
+    evaluation set is the whole block.
+
     Exposes `row_index`: the DataFrame index label of the row each sample
     PREDICTS (the row at the end of the window), so predictions can be
     joined back to the source frame.
@@ -52,6 +73,7 @@ class SupplierSequenceDataset(Dataset):
 
     def __init__(self, df: pd.DataFrame, feature_cols: list[str], seq_len: int):
         self.seq_len = seq_len
+        n_features = len(feature_cols)
         samples, labels, row_index = [], [], []
 
         df = df.sort_values(["seller_id", "as_of_date"])
@@ -60,8 +82,12 @@ class SupplierSequenceDataset(Dataset):
             y = group[TARGET].values.astype(np.float32)
             idx = group.index.values
 
-            for i in range(seq_len, len(group)):
-                samples.append(values[i - seq_len:i])
+            for i in range(len(group)):
+                window = values[max(0, i - seq_len):i]
+                if len(window) < seq_len:
+                    pad = np.zeros((seq_len - len(window), n_features), dtype=np.float32)
+                    window = np.vstack([pad, window]) if len(window) else pad
+                samples.append(window)
                 labels.append(y[i])
                 row_index.append(idx[i])
 
@@ -117,10 +143,7 @@ def train_lstm(seq_df: pd.DataFrame, feature_cols: list[str]) -> tuple[Disruptio
 
         dataset = SupplierSequenceDataset(seq_df, feature_cols, cfg["sequence_length"])
         if len(dataset) == 0:
-            raise ValueError(
-                f"No seller has more than {cfg['sequence_length']} rows — "
-                "cannot build a single training sequence."
-            )
+            raise ValueError("The training frame is empty — no sequences to build.")
         logger.info(f"LSTM dataset: {len(dataset):,} sequences of length "
                     f"{cfg['sequence_length']} x {len(feature_cols)} features")
 

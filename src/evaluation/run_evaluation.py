@@ -10,15 +10,21 @@ cost-aware operating threshold. The winner is what gets registered as
 
 The shared evaluation index
 ---------------------------
-The LSTM cannot score a seller's first `seq_len` days — it has no window
-to look back over. So it is structurally evaluated on a subset of the test
-rows, with a different size and a different base rate from the tabular
-models. PR-AUC is not comparable across different base rates, so ranking
-six models scored on two different row sets produces a table that looks
-authoritative and means nothing.
+Ranking models by PR-AUC only means something if they were scored on the
+same rows: PR-AUC depends on the base rate, so a table mixing two row sets
+looks authoritative and says nothing.
 
-This module therefore lets the LSTM define the evaluation index and scores
-every other model on exactly those rows. Fewer rows, one honest ranking.
+The sequence model is the awkward one. Before left-padding it could not
+score a seller's first `seq_len` days at all, which quietly removed ~39%
+of the test block — and not at random: early seller-days run a much higher
+late rate, so the surviving base rate fell from 22.5% to 15.0% and every
+model was then compared on that skewed remainder.
+
+With left-padded sequences the LSTM scores every row, so the evaluation
+index is simply the whole block. This module still routes every model
+through that one index and `compare_models` still refuses mismatched
+lengths — the invariant is worth keeping even now that satisfying it is
+easy.
 
 Run with:
     python -m src.evaluation.run_evaluation
@@ -58,6 +64,18 @@ def load_lstm_model():
     """Rebuild the LSTM from its saved metadata, so architecture can't drift."""
     models_dir = get_project_root() / load_config()["paths"]["models"]
     meta = joblib.load(models_dir / "lstm_meta.joblib")
+
+    # A checkpoint saved before the metadata carried its own architecture is
+    # not safely loadable: config.yaml may have changed since, and silently
+    # reshaping the net around a checkpoint produces a model that loads and
+    # predicts nonsense. Say so instead.
+    missing = [k for k in ("hidden_size", "num_layers", "feature_cols") if k not in meta]
+    if missing:
+        raise ValueError(
+            f"lstm_meta.joblib is missing {missing} — it predates the current "
+            f"training code. Re-run: python -m src.models.trainer --stages lstm"
+        )
+
     model = DisruptionLSTM(
         n_features=len(meta["feature_cols"]),
         hidden_size=meta["hidden_size"],
@@ -77,8 +95,7 @@ def _score_block(block_df: pd.DataFrame, X_block: np.ndarray, y_block: np.ndarra
     p_lstm, row_index = predict_lstm(lstm_model, seq_frame, lstm_meta)
 
     if len(row_index) == 0:
-        raise ValueError("LSTM scored zero rows in this block — no seller has "
-                         "enough consecutive days to form a sequence.")
+        raise ValueError("The LSTM scored zero rows in this block — the block is empty.")
 
     pos = block_df.index.get_indexer(row_index)
     if (pos < 0).any():
@@ -104,11 +121,16 @@ def run_full_evaluation() -> pd.DataFrame:
                             bundle, lstm_model, lstm_meta)
         y_eval = test["y"]
 
+        coverage = len(y_eval) / test["n_full_block"]
         logger.info(
             f"Shared evaluation set: {len(y_eval):,} of {test['n_full_block']:,} test rows "
-            f"({len(y_eval) / test['n_full_block']:.1%} — the rest are seller-days inside "
-            f"the LSTM's {lstm_meta['seq_len']}-day warm-up), base rate {y_eval.mean():.2%}"
+            f"({coverage:.1%}), base rate {y_eval.mean():.2%}"
         )
+        if coverage < 0.999:
+            logger.warning(
+                f"{test['n_full_block'] - len(y_eval):,} test rows went unscored — "
+                f"expected full coverage with left-padded sequences."
+            )
 
         results = {name: {"y_true": y_eval, "y_prob": p} for name, p in test["probs"].items()}
         comparison = compare_models(results)
