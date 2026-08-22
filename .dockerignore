@@ -1,0 +1,16 @@
+.git/
+.github/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+notebooks/
+frontend/
+data/raw/*
+data/processed/*
+logs/*
+.env
+.dvc/
+dvc-storage/
+*.md

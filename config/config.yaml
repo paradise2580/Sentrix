@@ -1,0 +1,112 @@
+project:
+  name: sentrix
+  version: 0.1.0
+  random_state: 42
+paths:
+  data_raw: data/raw
+  data_processed: data/processed
+  artifacts: artifacts
+  logs: logs
+  models: artifacts/models
+  preprocessor: artifacts/preprocessor.joblib
+  chroma_db: artifacts/chroma
+  mlflow_tracking_uri: artifacts/mlruns
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: sentrix_user
+  password: sentrix_pass
+  database: sentrix
+  tables:
+    sellers: sellers
+    customers: customers
+    products: products
+    orders: orders
+    order_items: order_items
+    reviews: reviews
+    external_signals: external_signals
+    predictions: predictions
+synthetic_data:
+  n_suppliers: 120
+  n_days_history: 540
+  disruption_base_rate: 0.045
+  regions:
+  - Shanghai, China
+  - Shenzhen, China
+  - Ho Chi Minh City, Vietnam
+  - Chennai, India
+  - Bengaluru, India
+  - Dhaka, Bangladesh
+  - Jakarta, Indonesia
+  - Busan, South Korea
+  - Rotterdam, Netherlands
+  - Mexico City, Mexico
+  categories:
+  - Electronics Components
+  - Textiles & Apparel
+  - Pharma Raw Materials
+  - Automotive Parts
+  - Packaging Materials
+  - Chemicals
+preprocessing:
+  test_size: 0.2
+  rolling_windows:
+  - 7
+  - 14
+  - 30
+  outlier_iqr_multiplier: 1.5
+  label_horizon_days: 30
+  active_min_orders: 10
+model:
+  target_column: disruption_next_30d
+  logistic_regression:
+    max_iter: 1000
+    class_weight: balanced
+  random_forest:
+    n_estimators: 300
+    max_depth: 10
+    class_weight: balanced
+  xgboost:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+    eval_metric: logloss
+  lightgbm:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+  optuna:
+    n_trials: 5
+    cv_folds: 2
+    direction: maximize
+    scoring: average_precision
+  lstm:
+    sequence_length: 30
+    hidden_size: 32
+    num_layers: 2
+    epochs: 3
+    batch_size: 256
+    learning_rate: 0.001
+  decision_threshold: 0.5
+  risk_bands:
+    low: 0.25
+    medium: 0.5
+    high: 0.75
+rag:
+  chunk_size: 512
+  chunk_overlap: 50
+  top_k: 4
+  embedding_model: all-MiniLM-L6-v2
+  llm_model: llama-3.3-70b-versatile
+  llm_provider: groq
+  temperature: 0.0
+api:
+  host: 0.0.0.0
+  port: 8000
+  title: SENTRIX API
+frontend:
+  api_base_url: http://localhost:8000
+  port: 8501
+monitoring:
+  drift_report_path: logs/drift_report.html
+  pr_auc_gate: 0.32

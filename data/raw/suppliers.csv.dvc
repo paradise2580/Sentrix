@@ -1,0 +1,5 @@
+outs:
+- md5: 40675d8f8369f81c21a6fe958239157a
+  size: 8764
+  hash: md5
+  path: suppliers.csv

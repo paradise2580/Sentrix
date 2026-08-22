@@ -1,0 +1,5 @@
+outs:
+- md5: ba9b678eaa25d95e251f98064bb73d89
+  size: 12815538
+  hash: md5
+  path: external_signals.csv

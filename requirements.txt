@@ -1,0 +1,56 @@
+# ---- Core ----
+pandas
+numpy
+pyyaml
+python-dotenv
+sqlalchemy
+pymysql
+joblib
+
+# ---- ML ----
+scikit-learn
+xgboost
+lightgbm
+imbalanced-learn
+optuna
+torch
+shap
+
+# ---- MLOps ----
+mlflow
+dvc
+evidently
+
+# ---- RAG / LLM ----
+langchain
+langchain-community
+langchain-groq
+chromadb
+sentence-transformers
+
+# ---- Backend / Frontend ----
+fastapi
+uvicorn[standard]
+pydantic
+streamlit
+plotly
+
+# ---- Orchestration ----
+# apache-airflow — INTENTIONALLY NOT installed alongside the rest of this
+# stack. Airflow hard-pins sqlalchemy<2.0 and older flask/werkzeug, which
+# conflicts directly with FastAPI/MLflow's requirements. Airflow must run
+# in its own isolated environment (separate venv, container, or managed
+# service — MWAA/Cloud Composer/Astronomer) and trigger this project's
+# pipeline via subprocess/HTTP calls, never via shared Python imports.
+# See pipelines/sentrix_dag.py for the DAG, written for that separation.
+
+# ---- Testing / quality ----
+pytest
+httpx
+flake8
+black
+
+# ---- EDA ----
+seaborn
+matplotlib
+jupyter

@@ -1,0 +1,5 @@
+outs:
+- md5: 5ef6394d88dac67752a56d1f63e717a8
+  size: 22290
+  hash: md5
+  path: disruption_events.csv

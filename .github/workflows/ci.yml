@@ -1,0 +1,90 @@
+name: CI
+
+# Runs on every push and pull request — nothing merges unless this passes.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: sentrix
+          MYSQL_USER: sentrix_user
+          MYSQL_PASSWORD: sentrix_pass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint check (flake8)
+        run: flake8 src/ api/ --max-line-length=110 --extend-ignore=E203,W503
+        continue-on-error: true   # style issues warn, don't block — logic issues below do
+
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 15); do
+            mysqladmin ping -h 127.0.0.1 -u sentrix_user -psentrix_pass --silent && break
+            sleep 2
+          done
+
+      - name: Set up database schema
+        env:
+          MYSQL_HOST: 127.0.0.1
+        run: python -m src.ingestion.schema
+
+      - name: Load real Olist data
+        env:
+          MYSQL_HOST: 127.0.0.1
+        run: python -m src.ingestion.olist_loader
+
+      - name: Generate synthetic external-signal layer
+        env:
+          MYSQL_HOST: 127.0.0.1
+        run: python -m src.ingestion.synthetic_signals
+
+      - name: Run unit + integration tests
+        env:
+          MYSQL_HOST: 127.0.0.1
+        run: pytest tests/ -v --tb=short
+
+      - name: Build feature table
+        env:
+          MYSQL_HOST: 127.0.0.1
+        run: python scripts/build_features.py
+
+      - name: Train all 6 models
+        env:
+          MYSQL_HOST: 127.0.0.1
+        run: python -m src.models.trainer --stages baseline boosting ensemble lstm
+
+      - name: Run full evaluation (produces the summary the gate checks)
+        env:
+          MYSQL_HOST: 127.0.0.1
+        run: python -m src.evaluation.run_evaluation
+
+      - name: Model performance gate
+        run: python scripts/validate_model.py
