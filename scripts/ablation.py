@@ -69,10 +69,14 @@ def main() -> None:
     rows = []
 
     # 1. Rank by raw order count. No model at all.
+    #
+    # The column is standardised, so it is a SCORE, not a probability —
+    # evaluate_model reports NaN for Brier/ECE here rather than pretending
+    # otherwise. Only the ranking metrics are meaningful for this row, which
+    # is all the comparison needs.
     if "order_count_30d" in names:
         col = names.index("order_count_30d")
-        m = evaluate_model(y_te, X_te[:, col])
-        rows.append(("order_count_30d alone (no model)", m))
+        rows.append(("order_count_30d alone (no model)", evaluate_model(y_te, X_te[:, col])))
 
     def fit_rf(idx, label):
         rf = RandomForestClassifier(n_estimators=300, max_depth=10,

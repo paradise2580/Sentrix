@@ -1,0 +1,5 @@
+variant,pr_auc,vs_random,roc_auc,capture@10%
+order_count_30d alone (no model),0.4455,2.66,0.7641,0.322
+volume features only (3),0.4501,2.68,0.7639,0.3205
+everything EXCEPT volume (44),0.3477,2.07,0.6672,0.2594
+full model (47),0.3911,2.33,0.7102,0.2934

@@ -27,6 +27,7 @@ artifacts/*
 !artifacts/evaluation/
 artifacts/evaluation/*
 !artifacts/evaluation/*.csv
+!artifacts/evaluation/*.joblib
 
 # The serving tier ships with the repo. These three are what the deployed
 # API actually reads, and none of them is a model binary:
@@ -47,9 +48,11 @@ artifacts/mlruns/
 # ...except the serving snapshot, which is the whole point of the deployment.
 !data/serving/*.db
 
-# Logs
+# Logs and local run artifacts
 logs/*
 !logs/.gitkeep
+train.log
+*.zip
 
 # OS / IDE
 .DS_Store

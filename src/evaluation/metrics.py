@@ -133,6 +133,14 @@ def evaluate_model(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.
         y_prob = np.asarray(y_prob)
         y_pred = (y_prob >= threshold).astype(int)
 
+        # Ranking metrics work on ANY score — they only read the ordering.
+        # Calibration metrics do not: Brier and ECE compare a score to an
+        # observed rate, which is meaningless unless the score IS a
+        # probability. This function is also used to rank raw features
+        # directly (see scripts/ablation.py), so it reports NaN for the
+        # calibration metrics rather than refusing to score at all.
+        is_probability = bool(y_prob.min() >= 0.0 and y_prob.max() <= 1.0)
+
         metrics = {
             "roc_auc": roc_auc_score(y_true, y_prob),
             "pr_auc": average_precision_score(y_true, y_prob),   # primary ranking metric
@@ -140,8 +148,9 @@ def evaluate_model(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.
             "precision": precision_score(y_true, y_pred, zero_division=0),
             "recall": recall_score(y_true, y_pred, zero_division=0),
             "ks_statistic": ks_statistic(y_true, y_prob),
-            "brier": float(brier_score_loss(y_true, y_prob)),
-            "ece": expected_calibration_error(y_true, y_prob),
+            "brier": float(brier_score_loss(y_true, y_prob)) if is_probability else float("nan"),
+            "ece": expected_calibration_error(y_true, y_prob) if is_probability else float("nan"),
+            "is_probability": is_probability,
             "base_rate": float(y_true.mean()),
             "threshold_used": threshold,
             "n_eval": int(len(y_true)),
