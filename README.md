@@ -65,8 +65,14 @@ flowchart LR
 ```
 
 DVC versions the data, Airflow schedules the refresh, Evidently watches for
-drift, and GitHub Actions gates every merge on both the tests and the model's
-PR-AUC.
+drift, and GitHub Actions runs lint, the unit suite and the split-integrity
+tests on every push.
+
+The full retrain-and-gate job — stand up MySQL, load 100K orders, train six
+models, fail the build if PR-AUC drops below a floor — is **manual only**. It
+needs the raw Olist CSVs, which are Kaggle-licensed and so cannot be
+redistributed from this repo or a public DVC remote. Claiming a green badge for
+a job that cannot fetch its own data would be worth less than saying this.
 
 ---
 
