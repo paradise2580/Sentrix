@@ -1,0 +1,39 @@
+# Render blueprint — two free web services built from this repo.
+#
+# Both use requirements-serve.txt via their Dockerfiles, so neither image
+# carries the training stack. The API reads the committed SQLite snapshot
+# and vector index rather than a hosted database: Render's free Postgres
+# expires after 30 days, and a demo link that dies a month after it goes on
+# a CV is worse than no link.
+#
+# Free instances sleep after 15 minutes idle and take ~50s to wake. That is
+# stated in the README rather than hidden.
+
+services:
+  - type: web
+    name: sentrix-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.api
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: SENTRIX_DB_URL
+        value: sqlite:///data/serving/sentrix.db
+      - key: GROQ_API_KEY
+        sync: false          # set in the Render dashboard, never committed
+
+  - type: web
+    name: sentrix-dashboard
+    runtime: docker
+    dockerfilePath: ./Dockerfile.dashboard
+    plan: free
+    region: singapore
+    autoDeploy: true
+    envVars:
+      - key: SENTRIX_API_BASE
+        fromService:
+          name: sentrix-api
+          type: web
+          property: hostport

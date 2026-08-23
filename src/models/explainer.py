@@ -64,12 +64,47 @@ def build_tree_explainer(model, background: np.ndarray | None = None):
 
 
 def explain_predictions(explainer, X: np.ndarray) -> np.ndarray:
-    """Compute SHAP values for a batch of feature rows."""
+    """
+    Compute SHAP values for a batch of rows, normalised to a plain
+    (n_samples, n_features) array of POSITIVE-CLASS contributions.
+
+    Why this needs three branches
+    -----------------------------
+    SHAP's return shape for a binary classifier depends on both the
+    explainer and the library version, and getting it wrong does not
+    raise where the mistake is made:
+
+    - older TreeExplainer: a LIST of two (n_samples, n_features) arrays,
+      one per class
+    - current TreeExplainer (>=0.45): a single (n_samples, n_features,
+      n_classes) 3-D array
+    - LinearExplainer: a plain (n_samples, n_features) 2-D array
+
+    The 3-D case is the trap. `isinstance(shap_values, list)` is False,
+    so the old code passed the 3-D array straight through; zipping it
+    against feature names then produced one length-2 array per feature,
+    and the failure only surfaced later as "truth value of an array with
+    more than one element is ambiguous" inside a sort comparator — a
+    message that points nowhere near the actual cause.
+    """
     try:
         shap_values = explainer.shap_values(X)
-        # Some explainers return a list per class; normalize to the positive-class array
+
         if isinstance(shap_values, list):
-            shap_values = shap_values[1]
+            shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+
+        shap_values = np.asarray(shap_values)
+
+        if shap_values.ndim == 3:
+            # (n_samples, n_features, n_classes) — keep the positive class
+            shap_values = shap_values[..., -1]
+
+        if shap_values.ndim != 2:
+            raise ValueError(
+                f"Expected 2-D SHAP values (n_samples, n_features), got shape "
+                f"{shap_values.shape}. The explainer returned a layout this "
+                f"function does not handle."
+            )
         return shap_values
     except Exception as e:
         raise SentrixException(e, sys)
@@ -85,7 +120,13 @@ def explain_single_prediction(explainer, x_row: np.ndarray, feature_names: list[
     try:
         shap_values = explain_predictions(explainer, x_row.reshape(1, -1))[0]
 
-        contributions = list(zip(feature_names, shap_values))
+        if len(shap_values) != len(feature_names):
+            raise ValueError(
+                f"{len(shap_values)} SHAP values for {len(feature_names)} feature "
+                f"names — the attribution would be mapped to the wrong columns."
+            )
+
+        contributions = list(zip(feature_names, (float(v) for v in shap_values)))
         contributions.sort(key=lambda t: abs(t[1]), reverse=True)
 
         return [

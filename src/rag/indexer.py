@@ -9,10 +9,15 @@ or TF-IDF fallback), and stores them in ChromaDB.
 
 Document sources indexed
 -------------------------
-- News/signal text generated during ingestion
-- SHAP explanations from evaluation (turned into readable sentences), so the
-  RAG chat can cite the MODEL's own reasoning, not just raw news
-- Supplier metadata (region, category, reliability) for grounding
+- One document per seller, built from its stored prediction and the SHAP
+  attribution behind it — so the chat can cite the MODEL's own reasoning
+  rather than paraphrasing a score.
+- Real Olist customer review text, so answers about what is going wrong
+  are grounded in what customers actually wrote.
+
+Note the reviews are in Brazilian Portuguese, because the source data is.
+That is deliberate: translating them would put a lossy layer between the
+answer and its evidence.
 """
 
 import json
@@ -140,10 +145,23 @@ def build_index(documents: list[dict] = None, reset: bool = True) -> chromadb.Co
         client = get_chroma_client()
 
         if reset:
+            # delete_collection drops the collection record but leaves its
+            # segment directory on disk, so every rebuild leaks ~6 MB of
+            # orphaned vectors. Log what is actually there so the growth is
+            # visible; scripts/export_serving_data.py clears the directory
+            # outright before a rebuild destined for deployment.
             try:
                 client.delete_collection(_COLLECTION_NAME)
             except Exception:
                 pass
+            persist = get_project_root() / load_config()["paths"]["chroma_db"]
+            on_disk = sum(f.stat().st_size for f in persist.rglob("*") if f.is_file())
+            if on_disk > 20e6:
+                logger.warning(
+                    f"Vector index directory is {on_disk / 1e6:.0f} MB — mostly orphaned "
+                    f"segments from previous rebuilds. Run "
+                    f"scripts/export_serving_data.py to compact it."
+                )
         collection = client.get_or_create_collection(_COLLECTION_NAME)
 
         if documents is None:

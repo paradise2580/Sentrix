@@ -61,13 +61,28 @@ class ChatResponse(BaseModel):
 
 
 class ModelMetric(BaseModel):
+    """
+    One row of the evaluation comparison table.
+
+    Mirrors the columns metrics.compare_models emits. Pydantic ignores
+    unknown keys by default, so a stale schema here does not raise — it
+    silently drops columns, which is how the capture/lift metrics were
+    being computed, written to CSV, and then thrown away before the
+    dashboard ever saw them.
+    """
     model: str
-    roc_auc: float
     pr_auc: float
+    pr_auc_lift: float | None = None     # PR-AUC / base rate — "x better than random"
+    roc_auc: float
+    ks_statistic: float
+    capture_at_10pct: float | None = None
+    lift_at_10pct: float | None = None
+    capture_at_20pct: float | None = None
+    brier: float | None = None
+    ece: float | None = None
     f1: float
     precision: float
     recall: float
-    ks_statistic: float
 
 
 class ModelMetricsResponse(BaseModel):

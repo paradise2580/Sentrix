@@ -1,0 +1,40 @@
+# The SERVING stack — what actually gets deployed.
+#
+# docker-compose.yml (the other one) brings up the full pipeline including
+# MySQL, for development and retraining. This file brings up only what runs
+# in production: an API reading the committed SQLite snapshot, and a
+# dashboard that talks to it over HTTP and holds no logic of its own.
+#
+#   docker compose -f docker-compose.serve.yml up --build
+#
+# Use it to reproduce a Render deployment locally before pushing.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      SENTRIX_DB_URL: sqlite:///data/serving/sentrix.db
+      # Optional: without it /chat returns retrieved context and no generated
+      # answer, which is a degraded response rather than an error.
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      SENTRIX_API_BASE: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy

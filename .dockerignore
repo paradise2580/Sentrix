@@ -1,16 +1,23 @@
-.git/
-.github/
+# Keep the build context small — these are the training inputs and outputs,
+# none of which the serving images need.
+.git
 venv/
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
-tests/
+
+data/raw/
+data/processed/
+!data/serving/
+
+artifacts/models/
+artifacts/mlruns/
+mlruns/
+
 notebooks/
-frontend/
-data/raw/*
-data/processed/*
-logs/*
+tests/
+logs/
+*.log
+*.zip
 .env
-.dvc/
-dvc-storage/
-*.md

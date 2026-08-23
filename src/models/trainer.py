@@ -73,7 +73,7 @@ def purged_temporal_split(
         test_start = dates.quantile(1 - test_size, interpolation="nearest")
         calib_start = dates.quantile(1 - test_size - calib_size, interpolation="nearest")
 
-        embargo = pd.Timedelta(days=int(embargo_days))
+        embargo = pd.Timedelta(int(embargo_days), unit="D")
         train_end = calib_start - embargo
         calib_end = test_start - embargo
 

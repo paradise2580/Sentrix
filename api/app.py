@@ -65,9 +65,27 @@ def health():
         versions = client.search_model_versions("name='sentrix-risk-model'")
         prod = next((v for v in versions if v.current_stage == "Production"), None)
 
+        # Report the ALGORITHM, not the MLflow run id. A 32-character hash
+        # answers "which run" — nobody's question. The useful answer to
+        # "what is live?" is the model family plus its registry version.
+        algorithm = None
+        try:
+            summary_path = (get_project_root() / "artifacts" / "evaluation"
+                            / "best_model_summary.joblib")
+            import joblib
+            algorithm = joblib.load(summary_path)["best_model"]
+        except Exception:
+            pass
+
+        if prod:
+            label = f"{algorithm} (registry v{prod.version})" if algorithm \
+                else f"{prod.name} v{prod.version}"
+        else:
+            label = algorithm
+
         return HealthResponse(
             status="ok",
-            model_name=prod.run_id if prod else None,
+            model_name=label,
             model_stage="Production" if prod else "none registered",
         )
     except Exception:

@@ -7,8 +7,14 @@ results in plain English.
 Built on **99,441 real orders** from 3,095 real Brazilian e-commerce sellers,
 with a real outcome label — not a simulated dataset.
 
-<!-- Replace the two URLs below once CI has run and the demo is deployed. -->
 ![CI](https://github.com/paradise2580/Sentrix/actions/workflows/ci.yml/badge.svg)
+
+<!-- LIVE:START -->
+**Live demo:** _deploying_ · **API docs:** _deploying_
+
+_Both run on a free tier and sleep after 15 minutes idle — the first request
+takes about 50 seconds to wake them. Everything after that is instant._
+<!-- LIVE:END -->
 
 ---
 
@@ -402,6 +408,51 @@ Stated because a portfolio project that claims none is not being read carefully.
 - **The RAG embedder falls back to TF-IDF** when `huggingface.co` is
   unreachable. Retrieval mechanics are identical and it switches back
   automatically.
+
+---
+
+## Deployment
+
+Two Docker services on Render's free tier, built straight from this repo.
+
+### The serving tier carries none of the training stack
+
+The API does **no model inference at request time**. `/sellers`, `/explain`,
+`/summary` and `/metrics` all read rows that `generate_predictions.py` computed
+offline, SHAP attributions included. So the deployed image needs none of this:
+
+| Dropped | Size | Why it isn't needed |
+|---|---|---|
+| torch | ~800 MB | the sequence model is a training-time comparison |
+| xgboost + lightgbm | ~200 MB | training only |
+| shap | ~50 MB | attributions are precomputed into the database |
+| mlflow | ~200 MB | the registry lives with the training environment |
+
+`requirements-serve.txt` is what actually gets installed. That is the difference
+between an image no free tier will run and one that fits in 512 MB.
+
+The one thing serving genuinely needs at request time is an **embedder**, to
+turn a chat question into a vector. That comes from chromadb's bundled ONNX
+build of `all-MiniLM-L6-v2` — same model as sentence-transformers, running on
+onnxruntime instead of PyTorch.
+
+### No database server
+
+Free managed Postgres **expires after 30 days**. A demo link that dies a month
+after it goes on a CV is worse than no link.
+
+The serving tier reads a few thousand precomputed rows, so it reads them from a
+SQLite file committed with the code (`scripts/export_serving_data.py` builds it
+from MySQL). Nothing to expire, nothing to leak, no cold-start connection.
+`SENTRIX_DB_URL` is what switches `src/ingestion/db.py` between the two.
+
+```bash
+# rebuild the serving snapshot after retraining
+python scripts/export_serving_data.py
+
+# run the serving stack locally, exactly as deployed
+docker compose -f docker-compose.serve.yml up --build
+```
 
 ---
 

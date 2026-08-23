@@ -3,30 +3,41 @@ src/ingestion/db.py
 
 Role
 ----
-One function that builds the SQLAlchemy engine used to talk to MySQL.
-Every module that needs a database connection calls get_engine() instead
-of constructing its own connection string — so credentials and connection
-logic live in exactly one place.
+One function that builds the SQLAlchemy engine every module talks to the
+database through, so credentials and connection logic live in exactly one
+place.
+
+Two backends, one interface
+---------------------------
+- **MySQL** for the full pipeline: ingestion, feature building, training.
+  This is where the 100k real Olist orders live.
+- **SQLite** for serving, selected by setting SENTRIX_DB_URL.
+
+The serving path reads a few thousand precomputed prediction rows and
+never writes. Standing up a managed MySQL for that would be renting a
+database to serve a file — and on a free tier the managed Postgres option
+*expires after 30 days*, which would silently break a demo link exactly
+when someone clicks it. A SQLite file committed alongside the code has no
+service to expire, no credentials to leak, and no cold-start penalty.
 
 Credential policy
 -----------------
-Non-secret connection details (host, port, user, database) have defaults
-in config.yaml and can be overridden by MYSQL_* environment variables.
-
-The PASSWORD has no config.yaml default on purpose. config.yaml is
-committed; .env is not. Keeping a working password in a committed file is
-the single most common way a project leaks a credential, and "it's only a
-local dev password" stops being true the moment the same file is copied to
-a deployment. If MYSQL_PASSWORD is unset, this fails immediately with an
-instruction rather than silently trying to connect with None.
+Host, port, user and database have non-secret defaults in config.yaml and
+can be overridden by MYSQL_* environment variables. The PASSWORD has no
+config.yaml default on purpose: config.yaml is committed, .env is not, and
+a working password in a committed file is the most common way a project
+leaks a credential. If MYSQL_PASSWORD is unset, this fails immediately
+with an instruction rather than trying to connect with None.
 """
 
 import os
+from pathlib import Path
+
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine.url import URL
 from dotenv import load_dotenv
 
-from src.config_loader import load_config
+from src.config_loader import load_config, get_project_root
 from src.logger import get_logger
 from src.exception import SentrixException
 import sys
@@ -35,6 +46,8 @@ load_dotenv()
 logger = get_logger(__name__)
 
 _engine_cache: Engine | None = None
+
+SERVING_URL_ENV = "SENTRIX_DB_URL"
 
 
 def _resolve(key_env: str, key_cfg: str, cfg_section: dict, default=None):
@@ -48,20 +61,41 @@ def _resolve_password() -> str:
         raise ValueError(
             "MYSQL_PASSWORD is not set. Copy .env.example to .env and fill it in "
             "(the password is intentionally not stored in config.yaml, which is "
-            "committed to version control)."
+            "committed to version control). To run against the serving SQLite "
+            f"snapshot instead, set {SERVING_URL_ENV}."
         )
     return password
 
 
+def _serving_engine(url: str) -> Engine:
+    """
+    Build an engine from an explicit SQLAlchemy URL — the serving path.
+
+    A relative sqlite path is resolved against the project root, not the
+    working directory, so `uvicorn api.app:app` behaves the same whether it
+    is launched from the repo root or from inside a container's WORKDIR.
+    """
+    if url.startswith("sqlite:///") and not url.startswith("sqlite:////"):
+        rel = url[len("sqlite:///"):]
+        if not Path(rel).is_absolute():
+            url = f"sqlite:///{(get_project_root() / rel).resolve()}"
+    logger.info(f"Serving engine ({SERVING_URL_ENV}): {url}")
+    return create_engine(url)
+
+
 def get_engine(force_new: bool = False) -> Engine:
-    """Build (or return the cached) SQLAlchemy engine for the SENTRIX MySQL database."""
+    """Build (or return the cached) engine for whichever backend is configured."""
     global _engine_cache
     if _engine_cache is not None and not force_new:
         return _engine_cache
 
     try:
-        cfg = load_config()["mysql"]
+        serving_url = os.getenv(SERVING_URL_ENV)
+        if serving_url:
+            _engine_cache = _serving_engine(serving_url)
+            return _engine_cache
 
+        cfg = load_config()["mysql"]
         url = URL.create(
             drivername="mysql+pymysql",
             username=_resolve("MYSQL_USER", "user", cfg),
@@ -82,4 +116,4 @@ def get_engine(force_new: bool = False) -> Engine:
 if __name__ == "__main__":
     engine = get_engine()
     with engine.connect() as conn:
-        print("Database connection OK:", engine.url.database)
+        print("Database connection OK:", engine.url.database or engine.url)

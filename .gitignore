@@ -9,7 +9,8 @@ __pycache__/
 .env
 
 # Raw + processed data: DVC-tracked, not git-tracked. Only the small .dvc
-# pointer files belong in the repo.
+# pointer files belong in the repo. data/serving/ is the exception — it is
+# the few-thousand-row SQLite snapshot the deployed API reads.
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep
@@ -27,12 +28,24 @@ artifacts/*
 artifacts/evaluation/*
 !artifacts/evaluation/*.csv
 
+# The serving tier ships with the repo. These three are what the deployed
+# API actually reads, and none of them is a model binary:
+#   preprocessor.joblib  6 KB   the fitted transform, needed to score
+#   chroma/              ~10 MB the vector index for RAG retrieval
+# Committing them is what lets the deployment need no database server and
+# no model download at boot.
+!artifacts/preprocessor.joblib
+!artifacts/chroma/
+!artifacts/chroma/**
+
 # MLflow — both the configured store and the ./mlruns directory MLflow
 # creates in the working directory when an experiment has no explicit
 # artifact_location. The latter is ~100MB of pickled models.
 mlruns/
 artifacts/mlruns/
 *.db
+# ...except the serving snapshot, which is the whole point of the deployment.
+!data/serving/*.db
 
 # Logs
 logs/*
@@ -45,7 +58,3 @@ logs/*
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
-
-# Local run artifacts
-*.zip
-train.log

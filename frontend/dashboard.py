@@ -17,6 +17,7 @@ Run with:
     streamlit run frontend/dashboard.py
 """
 
+import os
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -29,7 +30,11 @@ import plotly.graph_objects as go
 from src.config_loader import load_config
 
 cfg = load_config()
-API_BASE = cfg["frontend"]["api_base_url"]
+
+# The deployed dashboard and the deployed API are separate services with
+# separate URLs, so the backend address cannot be baked into config.yaml.
+# Environment first, config.yaml as the local default.
+API_BASE = os.getenv("SENTRIX_API_BASE") or cfg["frontend"]["api_base_url"]
 
 st.set_page_config(page_title="SENTRIX", page_icon="📦", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -195,24 +200,33 @@ with tab_overview:
             st.markdown("##### Average risk by state")
             by_state = summary.get("by_state") or []
             if not by_state:
+                # NOT st.stop() — that halts the entire script, blanking every
+                # other tab because one panel had no data.
                 st.info("No per-state data available yet.")
-                st.stop()
-            bs = pd.DataFrame(by_state).head(12).sort_values("avg_risk")
-            fig = go.Figure(go.Bar(
-                x=bs["avg_risk"], y=bs["seller_state"], orientation="h",
-                marker_color="#ef4444", text=bs["seller_count"].map(lambda n: f"{n} sellers"),
-                textposition="outside", hovertemplate="%{y}: avg risk %{x:.2f}<extra></extra>"))
-            fig.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0),
-                              xaxis_title="average risk score",
-                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, width='stretch')
+            else:
+                bs = pd.DataFrame(by_state).head(12).sort_values("avg_risk")
+                fig = go.Figure(go.Bar(
+                    x=bs["avg_risk"], y=bs["seller_state"], orientation="h",
+                    marker_color="#ef4444", text=bs["seller_count"].map(lambda n: f"{n} sellers"),
+                    textposition="outside", hovertemplate="%{y}: avg risk %{x:.2f}<extra></extra>"))
+                fig.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0),
+                                  xaxis_title="average risk score",
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(fig, width='stretch')
 
         st.markdown("##### How to read this")
         st.markdown(
-            "- **Risk score** = modelled probability that a seller has a late delivery "
-            "in the next 30 days, learned from real historical outcomes.\n"
-            "- **Bands** — low <0.25 · medium <0.50 · high <0.75 · critical ≥0.75.\n"
-            "- Every score is explainable: open **Explain** to see the exact feature "
+            "- **Risk score** = *calibrated* probability that a seller has a late "
+            "delivery in the next 30 days, learned from real historical outcomes. "
+            "Calibrated means 0.30 corresponds to roughly a 30% observed rate — "
+            "the raw model score does not.\n"
+            "- **Bands are capacity-based, not fixed cutoffs.** Critical = the worst "
+            "5% of sellers scored right now, high = the next 15%, medium = the next "
+            "30%. With a ~17% base rate a well-calibrated model rarely emits a "
+            "probability above 0.75, so absolute cutoffs would leave the top bands "
+            "permanently empty — and make a correctly calibrated model look safer "
+            "than an overconfident one.\n"
+            "- Every score is explainable: open **Explain** for the exact feature "
             "contributions (SHAP) behind any seller's number.")
 
 # ---------------------------------------------------------------------------
@@ -290,9 +304,11 @@ with tab_models:
     metrics = api_get("/metrics")
     if metrics:
         st.markdown(f"##### Six models compared — **{metrics['best_model']}** promoted to Production")
-        st.caption("Ranked by PR-AUC on a strictly chronological holdout (train on the past, "
-                   "test on the future — never shuffled). PR-AUC is the primary metric because "
-                   "late deliveries are a rare class.")
+        st.caption("Ranked by PR-AUC on a purged chronological holdout — train on the past, "
+                   "test on the future, with a 30-day embargo between them so no training "
+                   "label resolves inside the test window. Every model is scored on the "
+                   "identical set of rows. PR-AUC is the primary metric because late "
+                   "deliveries are the minority class.")
 
         mdf = pd.DataFrame(metrics["comparison"])
 
@@ -304,10 +320,28 @@ with tab_models:
                           legend=dict(orientation="h", y=1.12))
         st.plotly_chart(fig, width='stretch')
 
+        if "capture_at_10pct" in mdf.columns and mdf["capture_at_10pct"].notna().any():
+            st.markdown("##### What an ops team actually gets")
+            st.caption("PR-AUC summarises a curve nobody runs. This is the number a team "
+                       "with a fixed weekly review capacity cares about: work the top 10% "
+                       "of the ranked list, and this is the share of sellers who go late "
+                       "that you catch.")
+            cap = mdf.sort_values("capture_at_10pct")
+            fig2 = go.Figure(go.Bar(
+                x=cap["capture_at_10pct"], y=cap["model"], orientation="h",
+                marker_color="#22c55e",
+                text=cap["lift_at_10pct"].map(lambda v: f"{v:.2f}x random"),
+                textposition="outside",
+                hovertemplate="%{y}: catches %{x:.1%} of late sellers<extra></extra>"))
+            fig2.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0),
+                               xaxis_title="share of late sellers caught in the top 10%",
+                               xaxis_tickformat=".0%",
+                               paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig2, width='stretch')
+
         st.dataframe(mdf, width='stretch', hide_index=True,
                      column_config={c: st.column_config.NumberColumn(c, format="%.4f")
-                                    for c in ["roc_auc", "pr_auc", "f1", "precision",
-                                              "recall", "ks_statistic"]})
+                                    for c in mdf.select_dtypes("number").columns})
     else:
         st.info("Run `python -m src.evaluation.run_evaluation` to populate model metrics.")
 

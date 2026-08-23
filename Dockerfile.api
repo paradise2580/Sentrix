@@ -1,0 +1,34 @@
+# SENTRIX API — serving image.
+#
+# Built from requirements-serve.txt, not requirements.txt: no torch, no
+# boosting libraries, no shap, no mlflow. The API serves precomputed
+# predictions, so none of the training stack is on the request path.
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Dependencies first so a code change doesn't invalidate the (slow) pip layer.
+COPY requirements-serve.txt .
+RUN pip install --no-cache-dir -r requirements-serve.txt
+
+COPY config/ ./config/
+COPY src/ ./src/
+COPY api/ ./api/
+COPY data/serving/ ./data/serving/
+COPY artifacts/chroma/ ./artifacts/chroma/
+COPY artifacts/evaluation/ ./artifacts/evaluation/
+COPY artifacts/preprocessor.joblib ./artifacts/preprocessor.joblib
+
+# Read from the committed SQLite snapshot rather than MySQL — see
+# src/ingestion/db.py for why serving does not need a database server.
+ENV SENTRIX_DB_URL=sqlite:///data/serving/sentrix.db
+
+EXPOSE 8000
+
+# Render provides $PORT; default to 8000 for local `docker run`.
+CMD ["sh", "-c", "uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]

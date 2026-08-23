@@ -32,7 +32,19 @@ import sys
 load_dotenv()
 logger = get_logger(__name__)
 
-_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+def _groq_key() -> str:
+    """
+    Read the key at CALL time, not import time.
+
+    Reading it into a module constant means the value is frozen at the
+    first import. That is fine locally, where .env is loaded before
+    anything else, and wrong in a container or a test that sets the
+    variable after the module graph is already loaded — the key would be
+    present in the environment and the code would still report it missing.
+    """
+    return os.getenv("GROQ_API_KEY", "")
+
 
 _SYSTEM_PROMPT = """You are SENTRIX, a supply chain risk intelligence assistant.
 Answer the user's question using ONLY the context provided below. Be specific,
@@ -67,7 +79,8 @@ def answer_question(question: str, top_k: int | None = None) -> dict:
                 "grounded": False,
             }
 
-        if not _GROQ_API_KEY:
+        groq_key = _groq_key()
+        if not groq_key:
             logger.warning("GROQ_API_KEY not set — returning retrieved context without LLM generation")
             preview = "\n".join(f"- {c['text']}" for c in chunks)
             return {
@@ -85,7 +98,7 @@ def answer_question(question: str, top_k: int | None = None) -> dict:
 
         cfg = load_config()["rag"]
         llm = ChatGroq(
-            model=cfg["llm_model"], temperature=cfg["temperature"], api_key=_GROQ_API_KEY,
+            model=cfg["llm_model"], temperature=cfg["temperature"], api_key=groq_key,
         )
 
         prompt = _build_prompt(question, chunks)
@@ -103,7 +116,7 @@ def answer_question(question: str, top_k: int | None = None) -> dict:
 
 
 if __name__ == "__main__":
-    result = answer_question("Why might Supplier_048 be at risk?")
+    result = answer_question("Which sellers have critical delivery risk, and why?")
     print("ANSWER:\n", result["answer"])
     print(f"\nGrounded: {result['grounded']}, LLM used: {result.get('llm_used', False)}")
     print(f"Sources: {len(result['sources'])} chunks retrieved")

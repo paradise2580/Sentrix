@@ -119,7 +119,19 @@ def generate_and_store_predictions() -> pd.DataFrame:
             logger.warning("No calibrator found — storing RAW scores. Run "
                            "src.evaluation.run_evaluation first.")
 
-        bands = assign_risk_bands_by_quantile(probs, cfg["model"]["risk_band_quantiles"])
+        # Band on the RAW score, display the CALIBRATED one.
+        #
+        # Isotonic regression is a step function: every raw score inside a bin
+        # maps to a single output value, so the calibrated scores collapse onto
+        # a few dozen distinct numbers. Quantile cuts then land on large ties
+        # and push everything at the boundary into the higher band — the top
+        # band came out 5.5% instead of 5%, and "medium" swallowed 41% of the
+        # population instead of 30%.
+        #
+        # Calibration is monotone, so banding on the raw score changes no
+        # ordering. It only restores the resolution calibration flattened, and
+        # the bands then match the percentages the UI claims.
+        bands = assign_risk_bands_by_quantile(raw, cfg["model"]["risk_band_quantiles"])
 
         # --- explain --------------------------------------------------------
         # SHAP needs a model with a flat feature space. The ensemble and the
@@ -157,13 +169,22 @@ def generate_and_store_predictions() -> pd.DataFrame:
 
         predictions_df = pd.DataFrame(records)
 
+        # Same reasoning for ordering: rank by raw score so the worklist has a
+        # strict order, then hand back the calibrated probability for display.
+        predictions_df = (predictions_df.assign(_raw=raw)
+                                        .sort_values("_raw", ascending=False)
+                                        .drop(columns="_raw")
+                                        .reset_index(drop=True))
+
         loader = DataLoader()
         loader.truncate_table(cfg["mysql"]["tables"]["predictions"])
         loader.write_df(predictions_df, cfg["mysql"]["tables"]["predictions"],
                         if_exists="append")
 
         logger.info(f"Wrote {len(predictions_df):,} calibrated predictions to MySQL")
-        print(predictions_df["risk_band"].value_counts())
+        counts = predictions_df["risk_band"].value_counts()
+        print(pd.DataFrame({"sellers": counts,
+                            "share": (counts / len(predictions_df)).map("{:.1%}".format)}))
         print(predictions_df.sort_values("risk_score", ascending=False).head(10)[
             ["seller_id", "risk_score", "risk_band"]].to_string(index=False))
 
