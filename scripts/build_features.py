@@ -30,7 +30,7 @@ def main():
 
     logger.info(f"Feature table {features.shape} -> {out_path}")
     print(f"Feature table shape: {features.shape}")
-    print(f"Positive rate: {features['disruption_next_30d'].mean():.2%}")
+    print(f"Positive rate: {features['high_late_rate_next_30d'].mean():.2%}")
     print(f"Saved to: {out_path}")
 
 

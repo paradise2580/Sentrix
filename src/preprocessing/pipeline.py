@@ -34,8 +34,12 @@ import sys
 
 logger = get_logger(__name__)
 
-# Columns that are identifiers or the label — never fed into the transformer
-NON_FEATURE_COLUMNS = ["seller_id", "as_of_date", "disruption_next_30d"]
+# Columns that are identifiers or the label — never fed into the transformer.
+# The target name comes from config.yaml rather than a literal, so renaming
+# the target cannot leave a stale string here silently feeding the label in
+# as a feature.
+NON_FEATURE_COLUMNS = ["seller_id", "order_id", "as_of_date",
+                       load_config()["model"]["target_column"]]
 
 
 def get_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:

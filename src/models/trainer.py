@@ -15,15 +15,16 @@ Split strategy — purged, embargoed, three-way
 A plain chronological cut is NOT sufficient here, and this is the single
 most important correctness decision in the project.
 
-The label asks "does this seller have a late delivery in the next 30
-days?" So a training row dated one day before the cut has a label that is
-determined by outcomes occurring INSIDE the test window. Train and test
-then share information, the test score is optimistic, and the number you
-report is not the number you would get in production. The fix is an
-embargo: drop the final `label_horizon_days` of each training block so no
-retained training label can resolve inside the block that follows it. This
-is the standard purge-and-embargo treatment for overlapping-label
-financial time series.
+Rows are dated by PURCHASE time, but the label resolves at DELIVERY —
+typically one to three weeks later. So a training order purchased just
+before the cut has an outcome that lands inside the test window, and the
+seller-history features of early test orders are computed from outcomes
+that training rows already revealed. Train and test share information, the
+test score is optimistic, and the number reported is not the number
+production would give. The fix is an embargo: drop the final
+`embargo_days` of each block so no retained training label resolves inside
+the block that follows it. This is the standard purge-and-embargo
+treatment for overlapping-label time series.
 
 The middle CALIB block exists because probability calibration has to be
 fitted on data the model has not trained on, and evaluated on data neither
@@ -73,7 +74,7 @@ def purged_temporal_split(
         test_start = dates.quantile(1 - test_size, interpolation="nearest")
         calib_start = dates.quantile(1 - test_size - calib_size, interpolation="nearest")
 
-        embargo = pd.Timedelta(int(embargo_days), unit="D")
+        embargo = pd.Timedelta(days=int(embargo_days))
         train_end = calib_start - embargo
         calib_end = test_start - embargo
 
@@ -294,6 +295,14 @@ _STAGES = {
     "lstm": train_lstm_stage,
 }
 
+# The sequence model is NOT in the default set. SENTRIX predicts orders, and
+# an order is not a timestep in a seller's history — it is an independent
+# shipment whose risk is set by its route, weight and promised window. A
+# per-seller sliding window over ~110k orders would also allocate
+# 110k x seq_len x n_features floats to model a sequence that does not carry
+# the signal. Run it explicitly with --stages lstm if you want it evaluated.
+_DEFAULT_STAGES = ["baseline", "boosting", "ensemble"]
+
 
 def train_all_models(feature_table_path: str | None = None,
                      stages: list[str] | None = None) -> dict:
@@ -306,7 +315,7 @@ def train_all_models(feature_table_path: str | None = None,
     scratch.
     """
     try:
-        stages = stages or list(_STAGES.keys())
+        stages = stages or list(_DEFAULT_STAGES)
         data = prepare_data(feature_table_path)
 
         results = {}
@@ -324,7 +333,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Train SENTRIX models, stage by stage.")
     parser.add_argument(
-        "--stages", nargs="+", choices=list(_STAGES.keys()), default=list(_STAGES.keys()),
+        "--stages", nargs="+", choices=list(_STAGES.keys()), default=list(_DEFAULT_STAGES),
         help="Which training stage(s) to run. Default: all.",
     )
     args = parser.parse_args()

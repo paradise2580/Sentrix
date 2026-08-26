@@ -1,8 +1,9 @@
-# SENTRIX — Seller Delivery-Risk Intelligence
+# SENTRIX — Delivery-Risk Intelligence
 
-Predicts which marketplace sellers will miss a delivery in the next 30 days,
-explains **why** for each one, and lets a non-technical user interrogate the
-results in plain English.
+Predicts whether an individual order will miss its promised delivery date,
+rolls those predictions up into a per-seller risk queue, explains **why** for
+each seller, and lets a non-technical user interrogate the results in plain
+English.
 
 Built on **99,441 real orders** from 3,095 real Brazilian e-commerce sellers,
 with a real outcome label — not a simulated dataset.
@@ -25,12 +26,72 @@ are three thousand. Late deliveries cost refunds, support contacts and repeat
 custom — but only after they have already happened, and the team finds out from
 the complaint, not before.
 
-SENTRIX ranks every seller by the probability they will be late in the next 30
-days, so the hundred that get chased are the right hundred.
+SENTRIX scores every parcel at the moment it is placed, then ranks sellers by
+the **mean** risk of their recent parcels, so the hundred that get chased are
+the right hundred.
 
-**Where it lands:** reviewing the top 10% of the seller list catches **29.5%**
-of every seller who goes on to deliver late — 2.95× better than reviewing 10% at
-random. At 20% capacity it catches 45.6%.
+## What this project is actually about
+
+The interesting part of SENTRIX is not the model. It is that **two earlier
+versions of it were measurably wrong, and this repo contains the scripts that
+proved it** rather than a tidied-up history.
+
+| Version | Target | What killed it |
+|---|---|---|
+| v1 | Any late order in the next 30 days, per seller | A forest given **only** the three `order_count_*` columns scored ROC-AUC **0.7317**; the full 47-feature model scored **0.6494**. The model lost to one column. |
+| v2 | Forward late *rate* ≥ 15%, per seller | Worse. Every tabular model landed **below 0.5** ROC-AUC on the test block. |
+| v3 | **This one.** Will *this order* miss *its* promised date? | — |
+
+**v1 was a volume detector.** With a per-order late rate near 8%, P(at least one
+late | *n* orders) = 1 − 0.92ⁿ. Ship 100 parcels and that is 99.97%; ship three
+and it is 22%. The label was close to a deterministic function of how busy a
+seller was, and `scripts/ablation.py` measured exactly that.
+
+**v2 broke in the mirror image.** A 15% threshold with a 5-order minimum still
+means "at least one late order" at *n*=5, while at *n*=100 a seller at the
+marketplace rate has P(rate ≥ 15%) ≈ 0.4%. The positive rate now *fell* with
+volume. Olist volume grows through 2018, so the training block (17.3% positive)
+and the test block (12.2%) were different regimes, the learned relationship
+inverted, and AUC landed under a coin flip.
+
+**Then the question became whether a seller-level target is predictable at
+all.** `scripts/label_screen.py` built a label that neutralises volume by
+construction — worst 20% of forward late rate within month × volume-decile
+cells. It worked: volume-only ROC **0.4946**, base-rate drift **1.59** points.
+The model then scored **0.5056**. Removing the confound removed the performance
+with it.
+
+`scripts/label_screen2.py` found out why, with one measurement that needed no
+model at all — **split-half reliability**. Cut the forward window in half and
+correlate a seller's late rate in days 1–15 against their own rate in days
+16–30:
+
+| min forward orders | split-half *r* | persistence AUC |
+|---|---|---|
+| 5 | 0.206 | 0.5172 |
+| 10 | 0.243 | 0.5212 |
+| 20 | 0.318 | 0.5126 |
+| 30 | 0.344 | 0.4610 |
+| 50 | **0.388** | 0.4895 |
+
+Split-half reliability climbs — so a real seller effect exists. Persistence AUC,
+the trailing 30-day late rate used directly as a score, sits at **0.46–0.52 at
+every denominator**. A seller running late this month is genuinely running late
+*all month*, and that says almost nothing about next month.
+
+**Lateness here is a shock — a bad batch, a carrier problem, a demand spike —
+not a stable seller trait.** No feature set predicts a target that does not
+persist. That is why this project models orders.
+
+### Why the rollup is a mean
+
+Predicting orders and *summing* the risk would reintroduce the v1 confound
+immediately: a seller shipping 200 parcels would top the queue permanently,
+not because their parcels are risky but because they have more of them.
+
+So a seller's risk is the **mean** predicted risk of their recent orders. That
+is a rate. It cannot be inflated by shipping more. The volume confound is closed
+by the shape of the statistic rather than argued away in a README.
 
 ---
 
@@ -45,7 +106,7 @@ flowchart LR
     end
 
     subgraph features["Feature engineering"]
-        B --> C["Seller-day panel<br/>380,775 rows × 30 features"]
+        B --> C["Order table<br/>one row per order×seller<br/>features known at purchase"]
         C --> D{"Purged split<br/>+ 30d embargo"}
     end
 
@@ -53,13 +114,13 @@ flowchart LR
         D --> E1["LogReg · RandomForest"]
         D --> E2["XGBoost (Optuna)<br/>LightGBM (SMOTE)"]
         D --> E3["Stacking ensemble<br/>TimeSeriesSplit CV"]
-        D --> E4["LSTM<br/>30-day sequences"]
-        E1 & E2 & E3 & E4 --> H["Shared evaluation<br/>+ isotonic calibration"]
+        E1 & E2 & E3 --> H["Shared evaluation<br/>+ isotonic calibration"]
     end
 
     subgraph serve["Serving"]
-        H --> I["MLflow registry<br/>Production stage"]
-        H --> J["SHAP explanations"]
+        H --> R["Roll up to seller<br/>MEAN order risk"]
+        R --> I["MLflow registry<br/>Production stage"]
+        R --> J["SHAP explanations"]
         I & J --> K[("predictions<br/>table")]
         K --> L["FastAPI"]
         L --> M["Streamlit dashboard"]
@@ -90,52 +151,54 @@ covered by a test that fails the build.
 
 ### 1. The label overlaps the split
 
-The label asks "is this seller late in the next 30 days?" A plain chronological
-cut leaves training rows whose labels are decided by events inside the test
-window. Train and test then share information and the held-out score is
-optimistic — and nothing raises an exception, because leakage does not crash,
-it just makes every metric go up.
+Rows are dated by **purchase** time, but the label resolves at **delivery** —
+one to three weeks later. A plain chronological cut therefore leaves training
+orders whose outcomes land inside the test window, and the lagged seller-history
+features of early test orders are computed from outcomes that training rows
+already revealed. Train and test share information, the held-out score is
+optimistic, and nothing raises an exception — leakage does not crash, it just
+makes every metric go up.
 
 The split is therefore **purged and embargoed**, the standard treatment for
 overlapping-label time series:
 
 ```
-2016-09 ─────────── TRAIN ─────────── 2018-02-10  ╎ 30d ╎  CALIB  ╎ 30d ╎  ──── TEST ──── 2018-10
-                 239,210 rows                     embargo  10,793   embargo   76,815 rows
-                                                            rows
-                                        53,957 rows deliberately discarded
+2016-09 ──────── TRAIN ──────── ╎ 30d embargo ╎ CALIB ╎ 30d embargo ╎ ──── TEST ──── 2018-10
+                                     rows in the gaps are deliberately discarded
 ```
+
+Exact block sizes are printed by `purged_temporal_split` on every run and land
+in `pivot-run.log`, so they cannot drift out of date in this file.
 
 The middle block exists so probability calibration can be fitted on data the
 model never trained on and the test set never touches. Fitting the calibrator
 on the test set would quietly turn the test score into a training score.
 
-### 2. Six models, two different test sets
+### 2. Models evaluated on different row sets cannot be ranked
 
-The LSTM could not score a seller's first 30 days — no window to look back over
-— so it was evaluated on a *subset* of the test rows while the five tabular
-models were evaluated on all of them. All six were then printed in one table
-ranked by PR-AUC, which is not comparable across base rates. The ranking was
-meaningless.
+PR-AUC depends on the base rate of the set it is measured on, so two models
+scored on different subsets cannot be put in one ranked table — the ordering
+means nothing.
 
-Worse, the dropped rows were not a random sample. Early seller-days carry a
-higher late rate, so excluding them pulled the test block's base rate from
-**16.8% down to 15.0%** across 39% fewer rows — the subset was easier as well as
-smaller, which flatters every model on it.
+This was a live bug, not a hypothetical. The sequence model could not score a
+seller's first 30 days (no window to look back over), so it was evaluated on a
+*subset* while the tabular models used every row, and all six were printed in
+one table ranked by PR-AUC. Worse, the dropped rows were not a random sample:
+early seller-days carry a higher late rate, so excluding them pulled the test
+block's base rate from **16.8% down to 15.0%** across 39% fewer rows. The subset
+was easier as well as smaller, which flatters whichever model is measured on it.
 
-Fixed by left-padding the sequences: a seller with three days of history gets a
-30-step window whose first 27 rows are zeros, which in standardised space is the
-training mean — "no information", which is what an unobserved day is. Every
-model is now scored on all 76,815 test rows at the true base rate. It is also
-the correct production behaviour: a new seller needs a score on day 3, and that
-is exactly when a delivery-risk score is most useful.
+Two guards now make that class of error loud:
 
-`compare_models` still raises if handed results of differing lengths.
+- `compare_models` **raises** if handed result arrays of differing lengths,
+  rather than printing a table that mixes base rates.
+- `run_evaluation` compares a loaded sequence model's saved feature space
+  against the current preprocessor and refuses to score if they disagree. A
+  checkpoint trained on 46 seller-day features will otherwise load happily
+  against order-level input and return confident nonsense.
 
-The LSTM was also being fed **raw unscaled features** while every other model
-got the fitted `StandardScaler` — an unscaled `days_since_last_late` of 9999
-saturates the gates on the first forward pass. It now consumes the same
-transformed matrix as everything else.
+The evaluation set is reported as a fraction of the full test block on every
+run, so a silent coverage drop shows up in the log instead of in the metrics.
 
 ### 3. Leakage reintroduced one level down
 
@@ -165,7 +228,7 @@ training on four rows.
 
 <!-- RESULTS:START -->
 
-Evaluated on **76,815 held-out seller-days** from the final chronological block, base rate **16.8%**. Train and test are separated by a 30-day embargo, so no training label resolves inside the evaluation window.
+Evaluated on **19,564 held-out orders** from the final chronological block, base rate **5.2%**. Train and test are separated by a 30-day embargo, so no training label resolves inside the evaluation window.
 
 ### Model comparison
 
@@ -173,44 +236,43 @@ Every model is scored on the *same* rows. PR-AUC depends on the base rate, so mo
 
 | Model | PR-AUC | vs. random | ROC-AUC | KS | Capture @10% | Lift @10% | Brier |
 |---|---|---|---|---|---|---|---|
-| **Random Forest** | **0.3911** | 2.33x | 0.7102 | 0.3278 | 29.3% | 2.93x | 0.1833 |
-| Stacking Ensemble | 0.3901 | 2.33x | 0.6802 | 0.3071 | 29.1% | 2.91x | 0.1826 |
-| Logistic Regression | 0.3785 | 2.26x | 0.6355 | 0.2847 | 29.5% | 2.95x | 0.2009 |
-| LightGBM (SMOTE) | 0.3430 | 2.04x | 0.6330 | 0.2448 | 27.2% | 2.71x | 0.1735 |
-| XGBoost (Optuna-tuned) | 0.3281 | 1.96x | 0.6126 | 0.2117 | 25.3% | 2.53x | 0.1637 |
-| LSTM (PyTorch) | 0.2485 | 1.48x | 0.5711 | 0.1190 | 19.8% | 1.98x | 0.2635 |
+| **Stacking Ensemble** | **0.1528** | 2.93x | 0.7613 | 0.3958 | 32.1% | 3.21x | 0.3606 |
+| XGBoost (Optuna-tuned) | 0.1494 | 2.86x | 0.7551 | 0.3804 | 32.1% | 3.21x | 0.1571 |
+| Logistic Regression | 0.1167 | 2.24x | 0.7158 | 0.3244 | 25.1% | 2.51x | 0.4029 |
+| LightGBM (SMOTE) | 0.0884 | 1.69x | 0.6360 | 0.1914 | 20.8% | 2.08x | 0.0544 |
+| Random Forest | 0.0527 | 1.01x | 0.5249 | 0.0869 | 8.8% | 0.88x | 0.1869 |
 
 ### What an operations team actually gets
 
-PR-AUC summarises a curve nobody runs. A team can review a fixed number of sellers per cycle, so the number that matters is how much of the risk they capture at that capacity.
+PR-AUC summarises a curve nobody runs. A team can review a fixed number of orders per cycle, so the number that matters is how much of the risk they capture at that capacity.
 
-| Review the top… | Sellers flagged | Of all who go late, caught | vs. random |
+| Review the top… | Orders flagged | Of all late orders, caught | vs. random |
 |---|---|---|---|
-| 5% | 3,841 | **17.1%** | 3.41x |
-| 10% | 7,682 | **29.5%** | 2.95x |
-| 20% | 15,363 | **45.6%** | 2.28x |
+| 5% | 978 | **18.5%** | 3.70x |
+| 10% | 1,956 | **29.9%** | 2.99x |
+| 20% | 3,913 | **51.3%** | 2.57x |
 
 ### Calibration
 
-`Random Forest` is calibrated with isotonic regression fitted on the held-out calibration block — data the model never trained on and the test set never touches.
+`Stacking Ensemble` is calibrated with isotonic regression fitted on the held-out calibration block — data the model never trained on and the test set never touches.
 
 | | Raw score | Calibrated |
 |---|---|---|
-| Brier score | 0.1833 | **0.1357** |
-| Expected calibration error | 0.2322 | **0.0882** |
-| Mean predicted probability | 0.3999 | 0.2501 |
+| Brier score | 0.3606 | **0.0492** |
+| Expected calibration error | 0.5422 | **0.0328** |
+| Mean predicted probability | 0.5944 | 0.0210 |
 
-Observed rate on the evaluation set: **0.1678**. Ranking metrics are invariant to any monotone rescaling of the score, so they are blind to this entirely — which is why a risk product needs both.
+Observed rate on the evaluation set: **0.0522**. Ranking metrics are invariant to any monotone rescaling of the score, so they are blind to this entirely — which is why a risk product needs both.
 
 ### Operating point
 
-The decision threshold is chosen by minimising expected cost at a **10:1** ratio (a missed late seller vs. an analyst's wasted review), not by defaulting to 0.5 — which silently assumes the two errors are equally bad.
+The decision threshold is chosen by minimising expected cost at a **10:1** ratio (a missed late parcel vs. an analyst's wasted review), not by defaulting to 0.5 — which silently assumes the two errors are equally bad.
 
-- Cost-optimal threshold: **0.1429** (F1-optimal would be 0.3890)
-- Precision 0.239 · Recall 0.782 · F1 0.366
-- Expected cost vs. not modelling at all: **53.2% lower**
-- Confusion matrix: TP=10,076 FP=32,168 FN=2,812 TN=31,759
-- Alert volume at that threshold: **55.0% of all seller-days**
+- Cost-optimal threshold: **0.0284** (F1-optimal would be 0.0426)
+- Precision 0.135 · Recall 0.510 · F1 0.213
+- Expected cost vs. not modelling at all: **18.3% lower**
+- Confusion matrix: TP=521 FP=3,343 FN=500 TN=15,200
+- Alert volume at that threshold: **19.8% of all orders**
 
 That last line is why the capacity view above is the one to run the product on. A 10:1 cost ratio says false alarms are cheap, so the cost-minimising threshold alerts on a large share of the population — arithmetically right, operationally useless. Supply a real cost ratio and re-derive it; supply a weekly review capacity and read the capture table instead.
 
@@ -218,31 +280,48 @@ That last line is why the capacity view above is the one to run the product on. 
 
 <!-- RESULTS:END -->
 
-### Five findings stated plainly rather than buried
+### Findings stated plainly rather than buried
 
-- **The boosted trees lost.** Random Forest wins, and plain Logistic Regression
-  beats both XGBoost and LightGBM. With rolling rates and a lifetime rate as
-  features, the signal is close to monotone in the target and there is little
-  interaction structure left for boosting to find — so it pays for its
-  flexibility in variance and gets nothing back. This is what baselines are for.
-- **Stacking added essentially nothing.** The ensemble lands within 0.001 PR-AUC
-  of its best base model. Once the leakage was removed there was no free lunch
-  left: the base models are highly correlated, so a meta-learner has little to
-  arbitrage. Worth knowing, and worth reporting rather than quietly dropping.
-- **The LSTM is the worst model here, by a distance.** A sequence model needs the
-  *shape* of a trajectory to matter beyond its current level. Rolling 7/14/30-day
-  windows already encode most of that shape as plain columns, so the LSTM is
-  paying for 47 × 30 inputs to rediscover what four features already say.
+- **The headline metric of v1 was an artefact, and the repo proves it.**
+  `scripts/ablation.py` ranks sellers by `order_count_30d` with no model at all
+  and beats the 47-feature champion. That script stays in the repository as a
+  regression test on the current design, not as history.
+- **Removing a confound can remove the performance.** The volume-neutral label
+  in `label_screen.py` scored 0.4946 on volume alone — exactly as designed — and
+  the model then scored 0.5056. A clean label is necessary, not sufficient.
+- **Some targets are not predictable, and that is a finding.** Split-half
+  reliability rises to 0.388 while persistence AUC stays at 0.46–0.52. A seller's
+  lateness is real *within* a month and does not carry *across* months. Two
+  versions of this project were spent learning that.
+- **Random Forest collapsed and the boosted models did not.** On the order
+  grain the forest scores ROC-AUC **0.5249** — barely above chance — while the
+  tuned XGBoost reaches **0.7551** and the stack **0.7613**. The order-level
+  signal lives in interactions (a tight promise *and* a long route *and* a
+  heavy parcel), and a depth-10 forest on 93 mostly-sparse one-hot columns
+  cannot find them. This inverted the seller-grain result, where the forest won
+  — a reminder that model choice is a property of the data, not a preference.
+- **A single column, negated, ranks better than the ensemble.** `promised_days`
+  scores ROC-AUC **0.2011** raw, which is not "useless" — 0.20 is as far from
+  chance as 0.80. A longer promised window means less lateness. The marketplace's
+  own delivery estimate already encodes distance and carrier, so the model's job
+  is not to rediscover it but to say *when that estimate is optimistic*. The
+  ablation now negates single columns before scoring them, because reporting
+  0.2011 as a weak result would have flattered the model it is compared against.
+- **The ablation was benchmarking against the wrong model.** It fitted a fixed
+  RandomForest for every variant, including the "full model" row — so on this
+  data every subset was being compared against a near-random baseline, and any
+  subset could look competitive. It now fits the champion family. A tool that
+  checks for self-deception is worth nothing if it deceives itself.
 - **A ranking score is not a probability.** LightGBM trains on SMOTE-resampled
   data; Logistic Regression and Random Forest use `class_weight="balanced"`. All
-  rank fine and all emit inflated probabilities. Isotonic calibration cuts ECE by
-  62% without touching the ranking.
-- **Calibration did not fully close, and here is why.** Mean prediction lands at
-  0.250 against an observed 0.168. The calibration block is a 12-day window whose
-  own base rate differs from the test period, so isotonic learned a mapping that
-  only partly transfers. Widening that block is the fix; it would move the
-  training boundary and require a full retrain, so it is listed as a known
-  limitation rather than silently smoothed over.
+  rank fine and all emit inflated probabilities. Isotonic calibration fixes the
+  scale without touching the ranking — see the Results section for the numbers
+  from the current run.
+- **The sequence model was dropped on purpose.** An order is not a timestep in a
+  seller's history; it is an independent shipment whose risk is set by its route,
+  weight and promised window. Keeping an LSTM for the sake of having one would
+  have meant allocating ~700MB to model a sequence that does not carry the
+  signal. `--stages lstm` still runs it if you want to see that for yourself.
 
 ### On the cost-optimal threshold
 
@@ -301,19 +380,40 @@ if weather/port is ever mislabelled as real.
 
 ---
 
-## Features — 30 columns at seller-day grain
+## Features — order grain, every column knowable at purchase time
 
 | Family | Provenance | Examples |
 |---|---|---|
-| Delivery history | REAL | rolling 7/14/30-day late counts and rates, trend, days since last late |
-| Review sentiment | REAL | rolling mean review score, bad-review counts |
-| External signals | MIXED | commodity volatility (real FRED), weather / port (generated) by state |
-| Profile & peer | REAL | lifetime late rate, state-peer late rate, tenure |
+| Promise | REAL | `promised_days` (marketplace's own estimate minus purchase), `shipping_limit_days`, `handover_share` |
+| Shipment | REAL | freight ratio, price per item, log weight, log volume, density, item count |
+| Route | REAL | `zip_gap` (CEP-prefix distance proxy), `same_state`, seller/customer zip region |
+| Calendar | REAL | purchase hour, day of week, month, weekend flag |
+| Lagged history | REAL | seller's and destination state's observed late rate, **as of 30 days before the order** |
+| Category | REAL | product category, top 20 + `other` |
 
-Every feature looks strictly **backward** via `.shift(1)`; the label looks
-strictly **forward**. The preprocessor is fitted on the training slice only —
-fitting the scaler or imputer on the full table leaks test-period statistics
-even when the row-level split is correct.
+**The lag on history is the point.** An order placed today has no delivery
+outcome for roughly two weeks, so a seller's "current" late rate is not
+knowable at purchase time. An unlagged expanding mean would feed the model
+outcomes that do not exist yet in production — the same class of error as the
+volume confound, just harder to see. `add_lagged_history` does a `merge_asof`
+back to the cumulative state at `purchase_date − 30d`.
+
+Explicitly excluded, each one individually tempting:
+
+| Column | Why it cannot be a feature |
+|---|---|
+| `order_delivered_customer_date` | This *is* the outcome |
+| `delay_days` | This is the outcome, in days |
+| `order_delivered_carrier_date` | The handover happens after purchase |
+| `order_approved_at` | Known hours later, not at purchase |
+
+`build_order_feature_table` raises if any column starting with
+`order_delivered`, `order_approved` or `delay_days` survives into the table —
+a guard, not a comment.
+
+The preprocessor is fitted on the training slice only: fitting the scaler or
+imputer on the full table leaks test-period statistics even when the row-level
+split is correct.
 
 ---
 
@@ -335,11 +435,11 @@ copy .env.example .env                           # MYSQL_PASSWORD is required
 python -m src.ingestion.schema                   # create tables
 python -m src.ingestion.olist_loader             # load real Olist data
 python -m src.ingestion.synthetic_signals        # real FRED + flagged synthetic
-python scripts/build_features.py                 # 380,775-row feature table
+python scripts/build_order_features.py           # order-level feature table
 
-python -m src.models.trainer                     # all four stages
+python -m src.models.trainer                     # baseline + boosting + ensemble
 python -m src.evaluation.run_evaluation          # rank, calibrate, pick threshold
-python -m src.evaluation.generate_predictions    # score + explain every seller
+python -m src.evaluation.generate_predictions    # score orders, roll up to sellers
 python -m src.models.mlflow_tracking             # register the winner
 python -m src.rag.indexer                        # build the chat index
 
@@ -355,6 +455,14 @@ Or `docker compose up`.
 Training stages are independently resumable —
 `python -m src.models.trainer --stages boosting` re-runs one stage without
 retraining the rest.
+
+To reproduce the evidence that shaped the target:
+
+```bash
+python scripts/ablation.py        # how much of the signal is just order volume
+python scripts/label_screen.py    # six candidate labels on one purged split
+python scripts/label_screen2.py   # split-half reliability — is it predictable at all
+```
 
 ---
 
@@ -382,29 +490,44 @@ Stated because a portfolio project that claims none is not being read carefully.
 - **One marketplace, one country, one two-year window.** Nothing here is
   evidence the model transfers to a different logistics network.
 - **The split is temporal, not grouped — the same sellers appear in train and
-  test.** That is deliberate: in production you score sellers you already have
-  history for, so a temporal split is the honest simulation of that. But it
-  means these numbers measure *temporal* generalisation and say nothing about
-  cold start. Measuring "how well does this score a seller it has never seen?"
-  needs a `GroupKFold` on `seller_id`, and would score lower — the delivery
-  history and lifetime-rate families, which carry most of the signal, are
-  precisely what a new seller does not have.
+  test.** That is deliberate: in production you score orders from sellers you
+  already have history for, so a temporal split is the honest simulation. But it
+  measures *temporal* generalisation and says nothing about cold start.
+  `GroupKFold` on `seller_id` would answer that and would score lower, since the
+  lagged-history features are exactly what a new seller does not have. The
+  promise, route and shipment families do not depend on seller history, so a
+  cold-start model is possible here — it is simply not what these numbers
+  measure.
+- **`promised_days` is the marketplace's own delivery estimate.** It is
+  legitimately known at purchase and it is informative precisely because it
+  already encodes distance and carrier. But it means the model partly learns
+  *when the marketplace's own estimator is optimistic*. On a platform that sets
+  promises differently, that feature's meaning changes.
+- **`zip_gap` is a proxy, not a distance.** Brazilian CEP prefixes are allocated
+  broadly geographically, so the gap between two prefixes correlates with
+  distance without being it. Real haversine distance from a geocoding table
+  would be strictly better.
 - **Risk bands are capacity-based, not absolute.** "Critical" means the worst 5%
-  of sellers scored right now, not a fixed probability. With a 22% base rate a
-  correctly calibrated model rarely exceeds 0.75, so absolute cutoffs would leave
-  the top bands permanently empty — which would make a well-calibrated model look
-  worse than an overconfident one.
+  of sellers scored right now, not a fixed probability. At an ~8% order late
+  rate a correctly calibrated model rarely emits high absolute probabilities, so
+  fixed cutoffs would leave the top bands permanently empty — making a
+  well-calibrated model look worse than an overconfident one.
+- **Sellers with fewer than 5 orders in the rollup window are not ranked at
+  all.** A mean over two parcels is noise. That is a deliberate coverage gap:
+  the queue is shorter and every row in it means something.
 - **Airflow needs its own environment.** It pins `sqlalchemy<2.0`, which
   conflicts with FastAPI and MLflow. See `requirements-airflow.txt`; the DAG in
   `pipelines/` is written for that separation and triggers the pipeline by
   subprocess, never by shared imports.
-- **The calibration block is narrow.** Twelve days, 10,793 rows, after the
-  30-day embargo takes its bite. Isotonic regression has enough data to fit, but
-  the block's base rate differs from the test period, which is why calibration
-  closes most of the gap and not all of it. Widening `calibration_size` in
-  `config.yaml` fixes it at the cost of training rows.
-- **The LSTM is not competitive and is kept as a negative result.** Deleting it
-  would make the comparison table look better and say less.
+- **The calibration block is narrow** after the 30-day embargo takes its bite.
+  Isotonic regression has enough data to fit, but the block's base rate differs
+  from the test period, which is why calibration closes most of the gap and not
+  all of it. Widening `calibration_size` in `config.yaml` fixes it at the cost of
+  training rows.
+- **Two dead ends are kept in the repository on purpose.** `feature_eng.py` and
+  both `label_screen` scripts build and evaluate the seller-level targets that
+  did not work. They are the evidence for why the project has the shape it does,
+  and deleting them would make the repo look tidier and say less.
 - **The RAG embedder falls back to TF-IDF** when `huggingface.co` is
   unreachable. Retrieval mechanics are identical and it switches back
   automatically.

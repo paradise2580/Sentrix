@@ -37,7 +37,7 @@ import sys
 
 logger = get_logger(__name__)
 
-TARGET = "disruption_next_30d"
+TARGET = load_config()["model"]["target_column"]
 
 
 class SupplierSequenceDataset(Dataset):

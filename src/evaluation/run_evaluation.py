@@ -91,17 +91,23 @@ def _score_block(block_df: pd.DataFrame, X_block: np.ndarray, y_block: np.ndarra
     Score every model on one block (calibration or test), restricted to the
     rows the LSTM can reach. Returns {"y": ..., "probs": {name: array}}.
     """
-    seq_frame = transform_to_frame(block_df, bundle).sort_values(["seller_id", "as_of_date"])
-    p_lstm, row_index = predict_lstm(lstm_model, seq_frame, lstm_meta)
+    if lstm_model is None:
+        # No sequence model in this run — every model scores every row, so
+        # the shared evaluation set is simply the whole block.
+        probs = {}
+        pos = np.arange(len(block_df))
+    else:
+        seq_frame = transform_to_frame(block_df, bundle).sort_values(["seller_id", "as_of_date"])
+        p_lstm, row_index = predict_lstm(lstm_model, seq_frame, lstm_meta)
 
-    if len(row_index) == 0:
-        raise ValueError("The LSTM scored zero rows in this block — the block is empty.")
+        if len(row_index) == 0:
+            raise ValueError("The LSTM scored zero rows in this block — the block is empty.")
 
-    pos = block_df.index.get_indexer(row_index)
-    if (pos < 0).any():
-        raise ValueError("LSTM row index does not align with the block frame.")
+        pos = block_df.index.get_indexer(row_index)
+        if (pos < 0).any():
+            raise ValueError("LSTM row index does not align with the block frame.")
 
-    probs = {"lstm": p_lstm}
+        probs = {"lstm": p_lstm}
     for name in SKLEARN_MODELS:
         model = load_sklearn_model(name)
         probs[name] = model.predict_proba(X_block[pos])[:, 1]
@@ -114,7 +120,31 @@ def run_full_evaluation() -> pd.DataFrame:
         cfg = load_config()
         data = prepare_data()
         bundle = data["bundle"]
-        lstm_model, lstm_meta = load_lstm_model()
+
+        # The sequence model is optional. SENTRIX models orders, not
+        # seller-days, and a per-seller sliding window over 100k orders is
+        # both memory-hostile and conceptually wrong — an order is not a
+        # timestep in a seller's history, it is an independent shipment.
+        # If lstm artifacts are present they are evaluated alongside the
+        # rest; if not, the tabular models score every row.
+        try:
+            lstm_model, lstm_meta = load_lstm_model()
+            # Artifacts from an earlier grain load fine and predict nonsense:
+            # a checkpoint trained on 46 seller-day features will happily
+            # accept a matrix of order features and return numbers. Compare
+            # the feature space and refuse rather than report a score.
+            trained_on = list(lstm_meta.get("feature_cols", []))
+            if trained_on != list(bundle["feature_names_out"]):
+                logger.warning(
+                    f"Stale sequence-model artifacts: trained on {len(trained_on)} "
+                    f"features, current preprocessor emits "
+                    f"{len(bundle['feature_names_out'])}. Skipping the LSTM."
+                )
+                lstm_model, lstm_meta = None, None
+        except Exception as exc:                                    # noqa: BLE001
+            logger.info(f"No sequence model evaluated ({exc.__class__.__name__}); "
+                        f"scoring tabular models on the full block")
+            lstm_model, lstm_meta = None, None
 
         # ---------------------------------------------------------- test block
         test = _score_block(data["test_df"], data["X_test"], data["y_test"],

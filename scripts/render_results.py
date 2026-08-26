@@ -70,7 +70,7 @@ def build_results_markdown() -> str:
     lines = [START, ""]
 
     lines += [
-        f"Evaluated on **{n_eval:,} held-out seller-days** from the final "
+        f"Evaluated on **{n_eval:,} held-out orders** from the final "
         f"chronological block, base rate **{_fmt_pct(base)}**. Train and test are "
         f"separated by a {embargo}-day embargo, so no training label resolves "
         f"inside the evaluation window.",
@@ -100,10 +100,10 @@ def build_results_markdown() -> str:
         "### What an operations team actually gets",
         "",
         "PR-AUC summarises a curve nobody runs. A team can review a fixed number of "
-        "sellers per cycle, so the number that matters is how much of the risk they "
+        "orders per cycle, so the number that matters is how much of the risk they "
         "capture at that capacity.",
         "",
-        "| Review the top… | Sellers flagged | Of all who go late, caught | vs. random |",
+        "| Review the top… | Orders flagged | Of all late orders, caught | vs. random |",
         "|---|---|---|---|",
     ]
     for pct in (5, 10, 20):
@@ -138,7 +138,7 @@ def build_results_markdown() -> str:
         "### Operating point",
         "",
         f"The decision threshold is chosen by minimising expected cost at a "
-        f"**{cost['cost_fn']:.0f}:{cost['cost_fp']:.0f}** ratio (a missed late seller vs. an "
+        f"**{cost['cost_fn']:.0f}:{cost['cost_fp']:.0f}** ratio (a missed late parcel vs. an "
         f"analyst's wasted review), not by defaulting to 0.5 — which silently assumes the "
         f"two errors are equally bad.",
         "",
@@ -150,7 +150,7 @@ def build_results_markdown() -> str:
         f"FN={m['false_negatives']:,} TN={m['true_negatives']:,}",
         f"- Alert volume at that threshold: "
         f"**{_fmt_pct((m['true_positives'] + m['false_positives']) / n_eval)} of all "
-        f"seller-days**",
+        f"orders**",
         "",
         "That last line is why the capacity view above is the one to run the product "
         "on. A 10:1 cost ratio says false alarms are cheap, so the cost-minimising "

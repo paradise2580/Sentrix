@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.config_loader import load_config
+
 from src.models.trainer import purged_temporal_split
 from src.evaluation.metrics import (
     capture_at_k, compare_models, expected_calibration_error,
@@ -32,7 +34,7 @@ def panel() -> pd.DataFrame:
     for seller in [f"s{i}" for i in range(5)]:
         for d in dates:
             rows.append({"seller_id": seller, "as_of_date": d,
-                         "x": rng.normal(), "disruption_next_30d": rng.integers(0, 2)})
+                         "x": rng.normal(), load_config()["model"]["target_column"]: rng.integers(0, 2)})
     return pd.DataFrame(rows)
 
 

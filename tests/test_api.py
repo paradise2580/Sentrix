@@ -45,11 +45,21 @@ def test_chat_rejects_short_question():
     assert client.post("/chat", json={"question": "hi"}).status_code == 422
 
 
-def test_metrics_returns_six_models():
+def test_metrics_returns_every_trained_model():
+    """
+    Asserts the comparison is non-empty and internally consistent rather than
+    pinning a model count. The count changed from 6 to 5 when the sequence
+    model was dropped at the order grain, and a hard-coded 6 turned a
+    deliberate design decision into a red build.
+    """
     r = client.get("/metrics")
     assert r.status_code in (200, 404)
     if r.status_code == 200:
-        assert len(r.json()["comparison"]) == 6
+        comparison = r.json()["comparison"]
+        assert len(comparison) >= 4
+        for row in comparison:
+            assert {"model", "pr_auc", "roc_auc"} <= set(row)
+            assert 0.0 <= row["roc_auc"] <= 1.0
 
 
 @pytest.mark.skipif(not mysql_is_reachable(), reason="MySQL not reachable")

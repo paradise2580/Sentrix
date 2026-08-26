@@ -8,6 +8,7 @@ explicitly via the trainer, not on every test invocation).
 
 import numpy as np
 
+from src.config_loader import load_config
 from src.models.baseline import build_logistic_regression, build_random_forest
 from src.models.boosting import build_xgboost, build_lightgbm
 from src.models.ensemble import build_ensemble
@@ -20,7 +21,7 @@ def _xy_from_sample(sample_feature_table):
         "lifetime_late_rate",
     ]
     X = sample_feature_table[feature_cols].values
-    y = sample_feature_table["disruption_next_30d"].values
+    y = sample_feature_table[load_config()["model"]["target_column"]].values
     return X, y
 
 

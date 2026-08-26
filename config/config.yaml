@@ -40,14 +40,62 @@ preprocessing:
   # the held-out score is optimistic. See models/trainer.py.
   embargo_days: 30
   label_horizon_days: 30
+
+  # --- label definition -------------------------------------------------
+  # The target is "does this seller's LATE RATE over the next 30 days exceed
+  # late_rate_threshold", NOT "does any order arrive late".
+  #
+  # The original 'any late order' label was volume-confounded by
+  # construction: with a per-order late rate near 8%, a seller shipping 100
+  # orders is ~99.97% certain to have one arrive late while a seller shipping
+  # three is at 22%. The label was therefore close to a deterministic
+  # function of order count, and the ablation proved it — ranking sellers by
+  # order_count_30d alone scored PR-AUC 0.4455 against the full 47-feature
+  # model's 0.3911. The model lost to one column.
+  #
+  # A rate is volume-normalised, so being busy no longer implies being risky.
+  late_rate_threshold: 0.15      # ~2x the 8.1% marketplace-wide order late rate
+  # A rate needs a denominator. Seller-days with fewer than this many orders
+  # in the forward window are dropped rather than labelled, because 0/1 and
+  # 1/1 are noise, not signal.
+  min_forward_orders: 5
+
   rolling_windows: [7, 14, 30]
   outlier_iqr_multiplier: 1.5
   # Sellers below this lifetime order count are dropped: too little history
   # to model, and they would otherwise dominate the panel with empty rows.
   active_min_orders: 10
 
+# --- order-level model ---------------------------------------------------
+# SENTRIX predicts whether an individual ORDER will miss its promised
+# delivery date. Two seller-level formulations were built and killed first;
+# scripts/label_screen2.py has the evidence. The short version: a seller's
+# late rate is consistent within a month (split-half r rises to 0.39) and
+# does not carry to the next one (persistence AUC 0.46-0.52 at every
+# denominator). Lateness is a shock, not a seller trait, so the seller-month
+# target was not predictable by anything measured before it.
+order_model:
+  # An order placed today has no delivery outcome for roughly two weeks, so
+  # the seller's "current" late rate is not knowable at purchase time.
+  # Historical rates are therefore computed as of this many days BEFORE the
+  # order. Without the lag the model trains on outcomes that would not exist
+  # yet in production.
+  history_lag_days: 30
+  # Rare categories become 'other': 74 one-hot columns that each fire a
+  # handful of times are variance, not signal.
+  top_categories: 20
+  # Seller risk shown in the dashboard is the MEAN predicted risk of the
+  # seller's most recent orders — a rate, so it cannot be inflated by
+  # shipping more. Sellers with fewer than this many recent orders are not
+  # ranked, because a mean over two orders is noise.
+  seller_rollup_window: 90
+  seller_rollup_min_orders: 5
+
 model:
-  target_column: disruption_next_30d
+  # The target is the order's own outcome: delivered after the promised
+  # date. Unlike the two seller-level targets before it, this is a fact
+  # about a shipment rather than a forecast of a seller's future behaviour.
+  target_column: is_late_delivery
 
   logistic_regression:
     max_iter: 1000
@@ -121,7 +169,13 @@ rag:
   chunk_overlap: 50
   top_k: 4
   embedding_model: all-MiniLM-L6-v2
-  llm_model: llama-3.3-70b-versatile
+  # Hosted catalogues change without notice — llama-3.3-70b-versatile was
+  # retired mid-project and started 404ing. chain.py walks this list on a
+  # model_not_found so the demo survives the next retirement too.
+  llm_model: openai/gpt-oss-20b
+  llm_fallback_models:
+    - openai/gpt-oss-120b
+    - groq/compound-mini
   llm_provider: groq
   temperature: 0.0
 

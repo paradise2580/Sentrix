@@ -1,5 +1,5 @@
 variant,pr_auc,vs_random,roc_auc,capture@10%
-order_count_30d alone (no model),0.4455,2.66,0.7641,0.322
-volume features only (3),0.4501,2.68,0.7639,0.3205
-everything EXCEPT volume (44),0.3477,2.07,0.6672,0.2594
-full model (47),0.3911,2.33,0.7102,0.2934
+promised_days alone (no model) [negated],0.2531,4.85,0.7989,0.4858
+promise features only (3),0.2075,3.98,0.6943,0.3947
+everything EXCEPT promise (90),0.0464,0.89,0.4509,0.0735
+full model (93),0.1494,2.86,0.7551,0.3213

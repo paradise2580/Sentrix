@@ -13,10 +13,14 @@ suppliers whose delivery risk SENTRIX predicts.
 
 Label (REAL)
 ------------
-    late_rate_next_30d > 0  ->  disruption_next_30d = 1
+    late_rate over the next 30 days >= threshold  ->  1
 
 Derived from Olist's real order_delivered_customer_date vs
 order_estimated_delivery_date. Nothing about the outcome is invented.
+
+This is a RATE, not "any late order". See attach_label for the ablation that
+forced the change: the previous any-late label was so volume-confounded that
+ranking sellers by order count alone beat the full model.
 
 Leakage control
 ---------------
@@ -42,6 +46,17 @@ from src.exception import SentrixException
 import sys
 
 logger = get_logger(__name__)
+
+# The RETIRED seller-day label. This module is no longer the project's
+# feature builder — SENTRIX models orders (see preprocessing/order_features)
+# because scripts/label_screen2.py showed the seller-level target does not
+# persist across the window boundary. The builder is kept because the
+# screening scripts that produced that evidence import it, and a reader who
+# wants to reproduce the finding needs the code that generated it.
+#
+# It deliberately does NOT read config.yaml's target_column any more: that
+# name now belongs to the order-level label.
+TARGET = "high_late_rate_next_30d"
 
 
 # ---------------------------------------------------------------- extraction
@@ -232,20 +247,77 @@ def add_profile_features(panel: pd.DataFrame) -> pd.DataFrame:
     return panel
 
 
-def attach_label(panel: pd.DataFrame, horizon_days: int) -> pd.DataFrame:
+# Columns computed from the FUTURE. They exist only to build the label and
+# must never reach a model — hence one place to name them and one place to
+# drop them.
+FORWARD_ONLY_COLUMNS = ["late_rate_next_30d", "forward_orders"]
+
+
+def attach_label(panel: pd.DataFrame, horizon_days: int,
+                 late_rate_threshold: float, min_forward_orders: int,
+                 target_col: str = TARGET) -> pd.DataFrame:
     """
-    REAL forward label: did this seller have any late delivery among orders
-    placed in (as_of_date, as_of_date + horizon]?
+    REAL forward label: over orders placed in (as_of_date, as_of_date +
+    horizon], does this seller's LATE RATE exceed late_rate_threshold?
+
+    Why a rate and not "any late order"
+    -----------------------------------
+    The original label was `any late delivery in the next 30 days`. With a
+    per-order late rate around 8%, that is close to a deterministic function
+    of order count: ship 100 orders and P(at least one late) is ~99.97%;
+    ship 3 and it is 22%. So the label mostly encoded how BUSY a seller was,
+    not how RISKY.
+
+    That was not a suspicion, it was measured. scripts/ablation.py ranked
+    sellers by `order_count_30d` alone, with no model at all, and scored
+    PR-AUC 0.4455 against the full 47-feature model's 0.3911. A single column
+    beat the champion by 14%, and adding the other 44 features to the three
+    volume ones made things worse.
+
+    A rate divides that confound out: a seller shipping 100 orders with 8
+    late looks exactly like a seller shipping 10 with 0.8 late.
+
+    Eligibility
+    -----------
+    A rate needs a denominator. Seller-days with fewer than
+    min_forward_orders in the forward window are left UNLABELLED rather than
+    labelled, because 0/1 and 1/1 are noise. This does condition the modelled
+    population on future activity, which is worth stating plainly: the model
+    is trained and evaluated on sellers who go on to trade. The alternative —
+    scoring a seller who ships nothing as "0% late" — would conflate "did not
+    ship" with "shipped perfectly", which is a worse distortion than the one
+    it avoids.
     """
     panel = panel.sort_values(["seller_id", "as_of_date"])
-    fwd = (
-        panel.groupby("seller_id")["late_n"]
-        .rolling(horizon_days, min_periods=1).sum()
-        .reset_index(level=0, drop=True)
-        .groupby(panel["seller_id"]).shift(-horizon_days)
+
+    def forward_sum(column: str) -> pd.Series:
+        """Sum of `column` over (as_of_date, as_of_date + horizon]."""
+        rolled = (panel.groupby("seller_id")[column]
+                  .rolling(horizon_days, min_periods=1).sum()
+                  .reset_index(level=0, drop=True))
+        return rolled.groupby(panel["seller_id"]).shift(-horizon_days)
+
+    forward_late = forward_sum("late_n")
+    forward_orders = forward_sum("orders_n")
+
+    late_rate = forward_late / forward_orders.replace(0, np.nan)
+    panel["late_rate_next_30d"] = late_rate
+    panel["forward_orders"] = forward_orders
+
+    label = (late_rate >= late_rate_threshold).astype("float")
+    # Unmeasurable, not negative.
+    label[forward_orders < min_forward_orders] = np.nan
+    label[forward_orders.isna()] = np.nan
+    panel[target_col] = label
+
+    measurable = int(label.notna().sum())
+    logger.info(
+        f"Label '{target_col}': late_rate >= {late_rate_threshold:.0%} over "
+        f"{horizon_days}d, among seller-days with >= {min_forward_orders} "
+        f"forward orders. {measurable:,} of {len(panel):,} rows labelled "
+        f"({measurable / len(panel):.1%}); positive rate "
+        f"{label.mean():.2%} of those."
     )
-    panel["disruption_next_30d"] = (fwd > 0).astype("float")
-    panel.loc[fwd.isna(), "disruption_next_30d"] = np.nan
     return panel
 
 
@@ -279,14 +351,29 @@ def build_feature_table() -> pd.DataFrame:
         panel = add_profile_features(panel)
 
         logger.info(f"Attaching REAL forward label (horizon={horizon}d)...")
-        panel = attach_label(panel, horizon)
+        panel = attach_label(
+            panel, horizon,
+            late_rate_threshold=cfg["preprocessing"]["late_rate_threshold"],
+            min_forward_orders=cfg["preprocessing"]["min_forward_orders"],
+        )
 
-        panel = panel.drop(columns=["orders_n", "late_n", "avg_delay_days"], errors="ignore")
-        panel = panel.dropna(subset=["disruption_next_30d"])
-        panel["disruption_next_30d"] = panel["disruption_next_30d"].astype(int)
+        # Drop the raw counts AND every column derived from the future. The
+        # forward columns exist only to build the label; leaving even one of
+        # them in the feature table would hand the model the answer.
+        panel = panel.drop(
+            columns=["orders_n", "late_n", "avg_delay_days"] + FORWARD_ONLY_COLUMNS,
+            errors="ignore",
+        )
+        panel = panel.dropna(subset=[TARGET])
+        panel[TARGET] = panel[TARGET].astype(int)
+
+        leaked = [c for c in panel.columns if "next" in c and c != TARGET]
+        if leaked:
+            raise ValueError(f"Forward-looking columns survived into the feature "
+                             f"table: {leaked}")
 
         logger.info(f"Feature table: {panel.shape}, "
-                    f"positive rate {panel['disruption_next_30d'].mean():.2%}")
+                    f"positive rate {panel[TARGET].mean():.2%}")
         return panel.reset_index(drop=True)
     except Exception as e:
         raise SentrixException(e, sys)

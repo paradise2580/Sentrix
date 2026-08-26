@@ -31,15 +31,21 @@ def test_rolling_features_do_not_leak_same_day(sample_seller_day_orders):
 
 def test_label_is_forward_looking(sample_seller_day_orders):
     panel = build_seller_day_panel(sample_seller_day_orders, active_min_orders=1)
-    panel = attach_label(panel, horizon_days=30)
-    labelled = panel.dropna(subset=["disruption_next_30d"])
-    assert labelled["disruption_next_30d"].isin([0.0, 1.0]).all()
+    # min_forward_orders=1 because the fixture is tiny; the production value
+    # (config.yaml) is higher so a rate is never computed off one order.
+    panel = attach_label(panel, horizon_days=30, late_rate_threshold=0.15,
+                         min_forward_orders=1)
+    labelled = panel.dropna(subset=["high_late_rate_next_30d"])
+    assert labelled["high_late_rate_next_30d"].isin([0.0, 1.0]).all()
     # the final horizon of each seller's history has no future to observe
-    assert panel["disruption_next_30d"].isna().sum() > 0
+    assert panel["high_late_rate_next_30d"].isna().sum() > 0
 
 
 def test_label_absent_from_feature_columns(sample_feature_table):
+    """The CONFIGURED target and the identifiers must never reach the model."""
+    from src.config_loader import load_config
     from src.preprocessing.pipeline import get_feature_columns
     num, cat = get_feature_columns(sample_feature_table)
-    assert "disruption_next_30d" not in num + cat
+    assert load_config()["model"]["target_column"] not in num + cat
     assert "seller_id" not in num + cat
+    assert "order_id" not in num + cat

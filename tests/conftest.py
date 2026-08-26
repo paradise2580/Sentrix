@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.config_loader import load_config
+
 
 def mysql_is_reachable() -> bool:
     try:
@@ -84,5 +86,11 @@ def sample_feature_table() -> pd.DataFrame:
         "state_peer_late_rate": rng.uniform(0, 0.3, n),
         "seller_tenure_days": rng.integers(0, 700, n),
         "seller_state": rng.choice(["SP", "RJ", "PR"], n),
-        "disruption_next_30d": rng.integers(0, 2, n),
+        # Both labels are present on purpose. "high_late_rate_next_30d" is the
+        # retired seller-day target, still exercised by the feature-builder
+        # tests; the configured target is whatever config.yaml currently names,
+        # so model tests keep working across a target rename instead of
+        # silently testing a stale column.
+        "high_late_rate_next_30d": rng.integers(0, 2, n),
+        load_config()["model"]["target_column"]: rng.integers(0, 2, n),
     })
