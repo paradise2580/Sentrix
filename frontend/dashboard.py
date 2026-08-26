@@ -131,14 +131,15 @@ summary = api_get("/summary")
 
 st.markdown(
     '<div class="hero"><h1>📦 SENTRIX</h1>'
-    '<p>Seller Delivery-Risk Intelligence — predicting which marketplace sellers '
-    'will miss a delivery in the next 30 days</p></div>',
+    '<p>Delivery-Risk Intelligence — scores every order at purchase time for the '
+    'risk it misses its promised date, then ranks sellers by the mean risk of '
+    'their recent orders</p></div>',
     unsafe_allow_html=True)
 
 st.markdown(
     '<div class="prov"><b>Data provenance</b> — Sellers, orders, reviews and the '
     'late-delivery label are <b>real</b> (Olist Brazilian marketplace, 99,441 orders, '
-    '8.11% genuine late rate). Commodity volatility is <b>real</b> (FRED oil prices). '
+    '8.02% genuine late rate). Commodity volatility is <b>real</b> (FRED oil prices). '
     'Weather &amp; port-congestion signals are <b>generated</b> and flagged '
     '<code>is_synthetic=1</code> in the database — free APIs cannot backfill 2016–2018.</div>',
     unsafe_allow_html=True)
@@ -149,7 +150,7 @@ st.markdown(
 if summary:
     bands = summary["band_counts"]
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    kpi(c1, f"{summary['total_sellers']:,}", "Sellers monitored")
+    kpi(c1, f"{summary['total_sellers']:,}", "Sellers ranked")
     kpi(c2, bands.get("critical", 0), "Critical risk", "act now", "k-crit")
     kpi(c3, bands.get("high", 0), "High risk", "watch closely", "k-high")
     kpi(c4, bands.get("medium", 0), "Medium risk", "", "k-med")
@@ -216,14 +217,15 @@ with tab_overview:
 
         st.markdown("##### How to read this")
         st.markdown(
-            "- **Risk score** = *calibrated* probability that a seller has a late "
-            "delivery in the next 30 days, learned from real historical outcomes. "
-            "Calibrated means 0.30 corresponds to roughly a 30% observed rate — "
-            "the raw model score does not.\n"
+            "- **Risk score** = the *calibrated* probability that a seller's typical "
+            "recent order misses its promised delivery date — the MEAN over their "
+            "orders in the last 90 days, not a sum. A rate, so it cannot be "
+            "inflated by shipping more. Calibrated means 0.05 corresponds to "
+            "roughly a 5% observed rate; the raw model score does not.\n"
             "- **Bands are capacity-based, not fixed cutoffs.** Critical = the worst "
             "5% of sellers scored right now, high = the next 15%, medium = the next "
-            "30%. With a ~17% base rate a well-calibrated model rarely emits a "
-            "probability above 0.75, so absolute cutoffs would leave the top bands "
+            "30%. At an ~8% order late rate a well-calibrated model rarely emits a "
+            "high absolute probability, so fixed cutoffs would leave the top bands "
             "permanently empty — and make a correctly calibrated model look safer "
             "than an overconfident one.\n"
             "- Every score is explainable: open **Explain** for the exact feature "
