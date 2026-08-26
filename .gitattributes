@@ -3,3 +3,8 @@
 *.joblib binary
 *.pt binary
 *.ipynb binary
+
+# Notebooks are exploration, not the deliverable. Without this GitHub reports
+# the repo as 57% Jupyter, which misrepresents what it is.
+*.ipynb linguist-documentation
+notebooks/* linguist-documentation

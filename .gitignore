@@ -61,3 +61,6 @@ train.log
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Run logs from the order-grain rebuild — scratch, not project output
+*-run.log
