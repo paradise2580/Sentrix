@@ -81,23 +81,36 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False)
 def api_get(path: str, params: dict | None = None):
-    try:
-        r = requests.get(f"{API_BASE}{path}", params=params, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"API unreachable at {API_BASE}{path} — is uvicorn running?  ({e})")
-        return None
+    return _request("get", path, params=params, timeout=20)
 
 
 def api_post(path: str, body: dict):
-    try:
-        r = requests.post(f"{API_BASE}{path}", json=body, timeout=60)
-        r.raise_for_status()
-        return r.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"API unreachable at {API_BASE}{path}  ({e})")
-        return None
+    return _request("post", path, json=body, timeout=60)
+
+
+def _request(method: str, path: str, **kwargs):
+    url = f"{API_BASE}{path}"
+    delays = [0, 5, 10, 15, 20, 25]
+    placeholder = None
+    last_err = None
+    for i, wait in enumerate(delays):
+        if wait:
+            if placeholder is None:
+                placeholder = st.empty()
+            placeholder.info("Waking up the backend — this takes up to a minute on first load.")
+            time.sleep(wait)
+        try:
+            r = getattr(requests, method)(url, **kwargs)
+            r.raise_for_status()
+            if placeholder is not None:
+                placeholder.empty()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            last_err = e
+    if placeholder is not None:
+        placeholder.empty()
+    st.error(f"Backend is still starting up. Please refresh in a minute. ({last_err})")
+    return None
 
 
 def fmt(value, spec=".2f", fallback="—"):
