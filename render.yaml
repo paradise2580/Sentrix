@@ -13,7 +13,7 @@ services:
   - type: web
     name: sentrix-api
     runtime: docker
-    dockerfilePath: ./Dockerfile.api
+    dockerfilePath: ./docker/Dockerfile.api
     plan: free
     region: singapore
     healthCheckPath: /health
@@ -27,7 +27,7 @@ services:
   - type: web
     name: sentrix-dashboard
     runtime: docker
-    dockerfilePath: ./Dockerfile.dashboard
+    dockerfilePath: ./docker/Dockerfile.dashboard
     plan: free
     region: singapore
     autoDeploy: true

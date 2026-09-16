@@ -20,7 +20,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     restart: unless-stopped
     environment:
       MYSQL_HOST: db
@@ -44,7 +44,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
+      dockerfile: docker/Dockerfile.frontend
     restart: unless-stopped
     environment:
       SENTRIX_API_BASE_URL: http://api:8000
