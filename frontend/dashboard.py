@@ -137,12 +137,22 @@ def _call(method: str, path: str, **kwargs):
     except requests.exceptions.RequestException as exc:
         raise BackendUnavailable("unreachable") from exc
 
-    if r.status_code in NOT_READY_STATUSES:
-        raise BackendUnavailable(f"status {r.status_code}")
+    # getattr rather than attribute access: the test suite substitutes minimal
+    # response doubles that implement raise_for_status() and json() and nothing
+    # else, and a status check is no reason to force every stand-in to grow a
+    # field. A real Response always carries one; anything without one falls
+    # through to raise_for_status() below, which is the check that matters.
+    status = getattr(r, "status_code", None)
+    if status in NOT_READY_STATUSES:
+        raise BackendUnavailable(f"status {status}")
     try:
         r.raise_for_status()
-    except requests.exceptions.HTTPError as exc:
-        raise BackendUnavailable(f"status {r.status_code}") from exc
+    except requests.exceptions.RequestException as exc:
+        # RequestException, not HTTPError: a response object is free to raise
+        # any transport error here — the test suite's offline double raises
+        # ConnectionError — and every one of them means the same thing to this
+        # caller, which is that there is no answer to work with.
+        raise BackendUnavailable(f"status {status or 'error'}") from exc
     return r.json()
 
 
