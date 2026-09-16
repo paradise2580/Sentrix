@@ -1,66 +1,66 @@
 """
 frontend/dashboard.py
- 
+
 Role
 ----
 The window users actually see. Holds NO business logic — every number comes
 from an HTTP call to the FastAPI backend, so the dashboard could be swapped
 for React tomorrow without touching model, database, or RAG code.
- 
+
 Performance note
 ----------------
 Landing KPIs come from a single /summary call rather than pulling all 1,325
 seller rows into the browser and aggregating client-side. API responses are
 cached with st.cache_data so switching tabs doesn't re-hit the backend.
- 
+
 Cold starts
 -----------
 The API sleeps when idle on a free host and takes up to a minute to wake.
 That is a normal state, not an error, and it is handled in one place: a
 single probe with backoff before any data is fetched. Two rules follow from
 having been burned by both:
- 
+
   * A 429 is answered by waiting *longer*, never by retrying immediately.
     Answering a rate limit with more traffic is what produced the rate limit.
   * A failed call is never cached. Caching a failure means the page stays
     broken for the full TTL after the backend has already recovered.
- 
+
 Operator instructions (uvicorn commands, missing-key warnings, the API's own
 URL) are shown only when running against a local backend. On a deployed
 instance the reader is a visitor, not an operator: they cannot act on any of
 it, and it makes a working service look broken.
- 
+
 Run with:
     streamlit run frontend/dashboard.py
 """
- 
+
 import os
 import sys
 import time
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
- 
+
 import requests
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
- 
+
 from src.config_loader import load_config
- 
+
 cfg = load_config()
- 
+
 # The deployed dashboard and the deployed API are separate services with
 # separate URLs, so the backend address cannot be baked into config.yaml.
 # Environment first, config.yaml as the local default.
 API_BASE = os.getenv("SENTRIX_API_BASE") or cfg["frontend"]["api_base_url"]
- 
+
 # Whether the person looking at this page can actually do anything about the
 # backend. Drives every operator-facing message below.
 IS_LOCAL = any(h in API_BASE for h in ("localhost", "127.0.0.1", "0.0.0.0"))
- 
+
 st.set_page_config(page_title="SENTRIX", page_icon="📦", layout="wide",
                    initial_sidebar_state="collapsed")
- 
+
 # ---------------------------------------------------------------------------
 # Styling
 # ---------------------------------------------------------------------------
@@ -68,11 +68,11 @@ st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; max-width: 1300px; }
     #MainMenu, footer { visibility: hidden; }
- 
+
     .hero { border-bottom: 1px solid rgba(255,255,255,.12); padding-bottom: 14px; margin-bottom: 22px; }
     .hero h1 { margin: 0; font-size: 34px; letter-spacing: -.5px; }
     .hero p  { margin: 4px 0 0; opacity: .65; font-size: 14px; }
- 
+
     .kpi {
         border: 1px solid rgba(255,255,255,.12); border-radius: 12px;
         padding: 16px 18px; height: 100%;
@@ -81,20 +81,20 @@ st.markdown("""
     .kpi .l { font-size: 11px; letter-spacing: .8px; text-transform: uppercase;
               opacity: .6; margin-top: 6px; }
     .kpi .s { font-size: 12px; opacity: .5; margin-top: 2px; }
- 
+
     .k-low  .v { color: #22c55e; }
     .k-med  .v { color: #eab308; }
     .k-high .v { color: #f97316; }
     .k-crit .v { color: #ef4444; }
     .k-neut .v { color: #e2e8f0; }
- 
+
     .prov {
         border-left: 3px solid #3b82f6; background: rgba(59,130,246,.08);
         padding: 10px 14px; border-radius: 0 8px 8px 0; font-size: 12.5px;
         opacity: .9; margin-bottom: 18px;
     }
     .stTabs [data-baseweb="tab"] { font-size: 15px; }
- 
+
     /* Skeleton shown while the backend wakes, so the page reads as loading
        rather than as empty. */
     .kpi-skel {
@@ -110,8 +110,8 @@ st.markdown("""
     @media (prefers-reduced-motion: reduce) { .kpi-skel { animation: none; } }
 </style>
 """, unsafe_allow_html=True)
- 
- 
+
+
 # ---------------------------------------------------------------------------
 # API layer
 # ---------------------------------------------------------------------------
@@ -119,24 +119,24 @@ st.markdown("""
 # 429 is in here because a free host rate-limits a waking instance, and the
 # correct response to it is patience, not another request.
 NOT_READY_STATUSES = {429, 500, 502, 503, 504}
- 
- 
+
+
 class BackendUnavailable(Exception):
     """The backend did not answer.
- 
+
     Deliberately carries no user-facing text: the call site decides what a
     person should be told, which differs between an operator on localhost and
     a visitor on the public URL.
     """
- 
- 
+
+
 def _call(method: str, path: str, **kwargs):
     url = f"{API_BASE}{path}"
     try:
         r = getattr(requests, method)(url, **kwargs)
     except requests.exceptions.RequestException as exc:
         raise BackendUnavailable("unreachable") from exc
- 
+
     if r.status_code in NOT_READY_STATUSES:
         raise BackendUnavailable(f"status {r.status_code}")
     try:
@@ -144,24 +144,24 @@ def _call(method: str, path: str, **kwargs):
     except requests.exceptions.HTTPError as exc:
         raise BackendUnavailable(f"status {r.status_code}") from exc
     return r.json()
- 
- 
+
+
 def wait_for_backend(max_seconds: int = 90):
     """Probe /health until it answers. Returns the payload or None.
- 
+
     One probe loop for the whole page, and the first attempt is deliberately
     patient: the host holds the connection open while a sleeping instance
     boots, so a single request with a long timeout usually rides the cold
     start out and returns normally. Short timeouts turn that one waiting
     request into a queue of abandoned ones, and the queue is what earns a 429.
- 
+
     Every endpoint used to run its own six-attempt loop, so a cold start meant
     a dozen near-simultaneous requests. That is what turned a slow start into
     a hard failure.
     """
     placeholder = st.empty()
     placeholder.info("Starting up — the service sleeps when idle and takes about a minute to wake.")
- 
+
     deadline = time.time() + max_seconds
     # First attempt waits rather than retries.
     try:
@@ -170,7 +170,7 @@ def wait_for_backend(max_seconds: int = 90):
         return health
     except BackendUnavailable:
         pass
- 
+
     delay = 4.0
     while time.time() < deadline:
         time.sleep(delay)
@@ -182,43 +182,43 @@ def wait_for_backend(max_seconds: int = 90):
             # Grow the gap rather than hammering. A 429 means "you are asking
             # too often", so the only correct reply to it is to ask less often.
             delay = min(delay * 1.8, 15.0)
- 
+
     placeholder.empty()
     return None
- 
- 
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _api_get_cached(path: str, params: dict | None = None):
     """Raises on failure, which is what keeps failures out of the cache:
     st.cache_data stores return values, not exceptions."""
     return _call("get", path, params=params, timeout=45)
- 
- 
+
+
 def api_get(path: str, params: dict | None = None):
     try:
         return _api_get_cached(path, params)
     except BackendUnavailable:
         return None
- 
- 
+
+
 def api_post(path: str, body: dict):
     try:
         return _call("post", path, json=body, timeout=60)
     except BackendUnavailable:
         return None
- 
- 
+
+
 def operator_note(message: str, code: str | None = None) -> None:
     """Show an instruction only to someone who can act on it.
- 
+
     On the deployed URL the reader is a visitor. Telling them to run uvicorn
     is noise at best and makes a healthy service look broken at worst.
     """
     if not IS_LOCAL:
         return
     st.warning(message + (f"\n\n```\n{code}\n```" if code else ""))
- 
- 
+
+
 def fmt(value, spec=".2f", fallback="—"):
     """
     Format a number that might be None/NaN. The dashboard must degrade to a
@@ -231,17 +231,17 @@ def fmt(value, spec=".2f", fallback="—"):
         return format(float(value), spec)
     except (TypeError, ValueError):
         return fallback
- 
- 
+
+
 def kpi(col, value, label, sub="", cls="k-neut"):
     col.markdown(
         f'<div class="kpi {cls}"><div class="v">{value}</div>'
         f'<div class="l">{label}</div><div class="s">{sub}</div></div>',
         unsafe_allow_html=True)
- 
- 
+
+
 BAND_COLORS = {"low": "#22c55e", "medium": "#eab308", "high": "#f97316", "critical": "#ef4444"}
- 
+
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
@@ -253,7 +253,7 @@ st.markdown(
     'risk it misses its promised date, then ranks sellers by the mean risk of '
     'their recent orders</p></div>',
     unsafe_allow_html=True)
- 
+
 st.markdown(
     '<div class="prov"><b>Data provenance</b> — Sellers, orders, reviews and the '
     'late-delivery label are <b>real</b> (Olist Brazilian marketplace, 99,441 orders, '
@@ -261,7 +261,7 @@ st.markdown(
     'Weather &amp; port-congestion signals are <b>generated</b> and flagged '
     '<code>is_synthetic=1</code> in the database — free APIs cannot backfill 2016–2018.</div>',
     unsafe_allow_html=True)
- 
+
 # Placeholders so the KPI row occupies its final height immediately; the page
 # does not jump when the real numbers land.
 skeleton = st.empty()
@@ -269,11 +269,11 @@ with skeleton.container():
     cols = st.columns(6)
     for c in cols:
         c.markdown('<div class="kpi-skel"></div>', unsafe_allow_html=True)
- 
+
 health = wait_for_backend() or {}
 summary = api_get("/summary") if health else None
 skeleton.empty()
- 
+
 # ---------------------------------------------------------------------------
 # KPI strip
 # ---------------------------------------------------------------------------
@@ -287,37 +287,37 @@ if summary and summary.get("total_sellers", 0) > 0:
     kpi(c5, bands.get("low", 0), "Low risk", "healthy", "k-low")
     kpi(c6, fmt(summary.get("avg_risk")), "Avg risk score",
         f"model: {summary.get('best_model') or '—'}")
- 
+
     caption = (f"Live model stage: **{health.get('model_stage', 'unknown')}**  ·  "
                f"Best model **{summary.get('best_model') or '—'}** "
                f"(PR-AUC {fmt(summary.get('best_pr_auc'), '.3f')})")
     if IS_LOCAL:
         caption += f"  ·  API: {API_BASE}"
     st.caption(caption)
- 
+
 elif summary is not None:
     st.info("No seller predictions are stored yet.")
     operator_note("Populate them with:", "python -m src.evaluation.generate_predictions")
- 
+
 else:
     st.info("The service is taking longer than usual to start. Refresh in a moment — "
             "it sleeps when idle and wakes on the first visit.")
     operator_note("Backend not reachable. Start it in another terminal:",
                   "uvicorn api.app:app --reload --port 8000")
- 
+
 st.write("")
- 
+
 tab_overview, tab_sellers, tab_explain, tab_models, tab_chat = st.tabs(
     ["📈 Overview", "📋 Seller Risk", "🔍 Explain", "🧪 Model Performance", "💬 Ask SENTRIX"]
 )
- 
+
 # ---------------------------------------------------------------------------
 # Tab 1 — Overview
 # ---------------------------------------------------------------------------
 with tab_overview:
     if summary and summary.get("total_sellers", 0) > 0:
         left, right = st.columns([1, 1])
- 
+
         with left:
             st.markdown("##### Risk score distribution")
             hist = summary.get("risk_histogram") or [0] * 20
@@ -330,7 +330,7 @@ with tab_overview:
                               xaxis_title="predicted risk score", yaxis_title="sellers",
                               paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig, width='stretch')
- 
+
         with right:
             st.markdown("##### Average risk by state")
             by_state = summary.get("by_state") or []
@@ -348,7 +348,7 @@ with tab_overview:
                                   xaxis_title="average risk score",
                                   paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
                 st.plotly_chart(fig, width='stretch')
- 
+
         st.markdown("##### How to read this")
         st.markdown(
             "- **Risk score** = the *calibrated* probability that a seller's typical "
@@ -366,7 +366,7 @@ with tab_overview:
             "contributions (SHAP) behind any seller's number.")
     else:
         st.info("Overview appears once the service has finished starting.")
- 
+
 # ---------------------------------------------------------------------------
 # Tab 2 — Seller risk table
 # ---------------------------------------------------------------------------
@@ -374,17 +374,17 @@ with tab_sellers:
     c1, c2 = st.columns([1, 3])
     band = c1.selectbox("Risk band", ["All", "critical", "high", "medium", "low"])
     params = {"limit": 500} if band == "All" else {"risk_band": band, "limit": 500}
- 
+
     sellers = api_get("/sellers", params=params) if health else None
     if sellers:
         df = pd.DataFrame(sellers)
         c2.caption(f"Showing top {len(df)} sellers by risk score "
                    f"(of {summary['total_sellers']:,} monitored)" if summary else "")
- 
+
         view = df[["seller_id", "seller_city", "seller_state",
                    "risk_score", "risk_band", "model_name"]].copy()
         view.columns = ["Seller ID", "City", "State", "Risk", "Band", "Model"]
- 
+
         st.dataframe(
             view, width='stretch', hide_index=True, height=520,
             column_config={
@@ -394,30 +394,30 @@ with tab_sellers:
             })
     elif sellers == []:
         st.info("No sellers in this band.")
- 
+
 # ---------------------------------------------------------------------------
 # Tab 3 — SHAP explanation
 # ---------------------------------------------------------------------------
 with tab_explain:
     st.markdown("##### Why is a seller flagged at its current risk level?")
     st.caption("Feature contributions come from SHAP — the model's own reasoning, not a guess.")
- 
+
     riskiest = api_get("/sellers", params={"limit": 200}) if health else None
     if riskiest:
         labels = {f"{s['seller_id'][:12]}…  ·  {s['seller_city'] or '—'} "
                   f"({s['seller_state'] or '—'})  ·  {s['risk_band']} {s['risk_score']:.2f}": s["seller_id"]
                   for s in riskiest}
- 
+
         picked = st.selectbox("Seller (top 200 by risk)", list(labels.keys()))
         seller_id = labels[picked]
- 
+
         exp = api_get(f"/explain/{seller_id}")
         if exp:
             m1, m2, m3 = st.columns([1, 1, 3])
             m1.metric("Risk score", fmt(exp.get("risk_score")))
             m2.metric("Band", exp["risk_band"].upper())
             m3.code(seller_id, language=None)
- 
+
             feats = pd.DataFrame(exp["top_features"]).sort_values("contribution")
             fig = go.Figure(go.Bar(
                 x=feats["contribution"], y=feats["feature"], orientation="h",
@@ -429,12 +429,12 @@ with tab_explain:
                 xaxis_title="SHAP contribution",
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig, width='stretch')
- 
+
             top = feats.reindex(feats["contribution"].abs().sort_values(ascending=False).index).iloc[0]
             direction = "raising" if top["contribution"] > 0 else "lowering"
             st.info(f"Biggest driver: **{top['feature']}** — {direction} this seller's risk "
                     f"by {abs(top['contribution']):.3f}.")
- 
+
 # ---------------------------------------------------------------------------
 # Tab 4 — Model performance
 # ---------------------------------------------------------------------------
@@ -447,9 +447,9 @@ with tab_models:
                    "label resolves inside the test window. Every model is scored on the "
                    "identical set of rows. PR-AUC is the primary metric because late "
                    "deliveries are the minority class.")
- 
+
         mdf = pd.DataFrame(metrics["comparison"])
- 
+
         fig = go.Figure()
         fig.add_bar(x=mdf["model"], y=mdf["pr_auc"], name="PR-AUC", marker_color="#ef4444")
         fig.add_bar(x=mdf["model"], y=mdf["roc_auc"], name="ROC-AUC", marker_color="#3b82f6")
@@ -457,7 +457,7 @@ with tab_models:
                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                           legend=dict(orientation="h", y=1.12))
         st.plotly_chart(fig, width='stretch')
- 
+
         if "capture_at_10pct" in mdf.columns and mdf["capture_at_10pct"].notna().any():
             st.markdown("##### What an ops team actually gets")
             st.caption("PR-AUC summarises a curve nobody runs. This is the number a team "
@@ -476,14 +476,14 @@ with tab_models:
                                xaxis_tickformat=".0%",
                                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig2, width='stretch')
- 
+
         st.dataframe(mdf, width='stretch', hide_index=True,
                      column_config={c: st.column_config.NumberColumn(c, format="%.4f")
                                     for c in mdf.select_dtypes("number").columns})
     else:
         st.info("Model comparison appears once the service has finished starting.")
         operator_note("Populate model metrics with:", "python -m src.evaluation.run_evaluation")
- 
+
 # ---------------------------------------------------------------------------
 # Tab 5 — RAG chat
 # ---------------------------------------------------------------------------
@@ -491,7 +491,7 @@ with tab_chat:
     st.markdown("##### Ask SENTRIX")
     st.caption("Answers are retrieved from the model's own predictions and real customer "
                "reviews (ChromaDB), then synthesised by an LLM — grounded, not guessed.")
- 
+
     examples = [
         "Which sellers in São Paulo have critical delivery risk?",
         "What are customers complaining about most?",
@@ -501,10 +501,10 @@ with tab_chat:
     for i, ex in enumerate(examples):
         if cols[i].button(ex, width='stretch'):
             st.session_state["q"] = ex
- 
+
     q = st.text_input("Your question", value=st.session_state.get("q", ""),
                       placeholder="e.g. Which sellers should I worry about this month?")
- 
+
     if st.button("Ask", type="primary") and q:
         with st.spinner("Retrieving context and reasoning…"):
             res = api_post("/chat", {"question": q})
