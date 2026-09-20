@@ -6,9 +6,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 
-**▶ [Live dashboard](https://sentrix-dashboard.onrender.com)** · **[API docs](https://sentrix-dashboard.onrender.com)**
+**▶ [Live dashboard](https://sentrix-dashboard.onrender.com)** · **[API docs](https://sentrix-api.onrender.com/docs)**
 
-> Hosted on a free tier, so the first visit takes about a minute to wake the service. Everything after that is instant.
+> Hosted on a free tier. A scheduled keep-alive ping (`.github/workflows/keepalive.yml`)
+> pings both services every 5 minutes so they never hit Render's 15-minute idle sleep —
+> no cold-start wait for a visitor opening the link.
 
 <!-- Add a dashboard screenshot here — save it as docs/dashboard.png and uncomment:
 ![SENTRIX dashboard](docs/dashboard.png)

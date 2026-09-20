@@ -56,7 +56,29 @@ app.add_middleware(
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    """Liveness check. Also reports which model MLflow currently has in Production."""
+    """Liveness check. Also reports which model is currently live.
+
+    The serving image deliberately ships without mlflow (see
+    requirements-serve.txt — the registry lives with the training
+    environment, not here), so on a deployed instance the import below
+    always fails. That is expected, not a fault: this falls back to the
+    algorithm name baked into best_model_summary.joblib by
+    generate_predictions.py, which is the same artifact /summary and
+    /metrics already read. Only a training-environment instance with
+    mlflow installed gets the registry-backed "Production"/version label.
+    """
+    # Report the ALGORITHM, not the MLflow run id. A 32-character hash
+    # answers "which run" — nobody's question. The useful answer to
+    # "what is live?" is the model family plus its registry version.
+    algorithm = None
+    try:
+        summary_path = (get_project_root() / "artifacts" / "evaluation"
+                        / "best_model_summary.joblib")
+        import joblib
+        algorithm = joblib.load(summary_path)["best_model"]
+    except Exception:
+        pass
+
     try:
         import mlflow
         tracking_dir = get_project_root() / cfg["paths"]["mlflow_tracking_uri"]
@@ -65,31 +87,18 @@ def health():
         versions = client.search_model_versions("name='sentrix-risk-model'")
         prod = next((v for v in versions if v.current_stage == "Production"), None)
 
-        # Report the ALGORITHM, not the MLflow run id. A 32-character hash
-        # answers "which run" — nobody's question. The useful answer to
-        # "what is live?" is the model family plus its registry version.
-        algorithm = None
-        try:
-            summary_path = (get_project_root() / "artifacts" / "evaluation"
-                            / "best_model_summary.joblib")
-            import joblib
-            algorithm = joblib.load(summary_path)["best_model"]
-        except Exception:
-            pass
-
         if prod:
             label = f"{algorithm} (registry v{prod.version})" if algorithm \
                 else f"{prod.name} v{prod.version}"
-        else:
-            label = algorithm
-
-        return HealthResponse(
-            status="ok",
-            model_name=label,
-            model_stage="Production" if prod else "none registered",
-        )
+            return HealthResponse(status="ok", model_name=label, model_stage="Production")
     except Exception:
-        return HealthResponse(status="ok", model_name=None, model_stage="mlflow unavailable")
+        pass
+
+    return HealthResponse(
+        status="ok",
+        model_name=algorithm,
+        model_stage="serving" if algorithm else "no model registered",
+    )
 
 
 @app.get("/sellers", response_model=list[SellerRiskResponse])
