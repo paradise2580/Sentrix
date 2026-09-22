@@ -27,7 +27,7 @@ jobs:
     name: Ping deployed services
     runs-on: ubuntu-latest
     env:
-      API_URL: ${{ vars.SENTRIX_API_URL || 'https://sentrix-api.onrender.com' }}
+      API_URL: ${{ vars.SENTRIX_API_URL || 'https://sentrix-api-t1dw.onrender.com' }}
       DASHBOARD_URL: ${{ vars.SENTRIX_DASHBOARD_URL || 'https://sentrix-dashboard.onrender.com' }}
 
     steps:
