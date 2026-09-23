@@ -1,10 +1,6 @@
 """
-scripts/build_order_features.py
-
 Builds the order-level feature table and writes it to
-data/processed/features.csv — the path every downstream module already
-reads, so the trainer, evaluator and prediction generator need no path
-changes to switch grain.
+data/processed/features.csv, which training and evaluation read.
 
 Run with:
     python scripts/build_order_features.py

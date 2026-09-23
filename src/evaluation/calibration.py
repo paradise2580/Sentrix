@@ -1,37 +1,9 @@
 """
-src/evaluation/calibration.py
+Maps raw model scores to calibrated probabilities with isotonic regression.
 
-Role
-----
-Turn a model's raw score into a probability you can actually put a number
-behind.
-
-Why this exists
----------------
-Every ranking metric in this project — PR-AUC, ROC-AUC, KS, capture@k — is
-invariant to any monotonic transformation of the score. A model can rank
-sellers perfectly and still claim 0.70 for a group that goes late 25% of
-the time. That is fine if the score is only ever used to sort a worklist,
-and it is a real problem the moment anyone multiplies the score by a cost,
-sets an SLA against it, or shows it to a seller as "your risk is 70%".
-
-Three of the six models here are actively miscalibrated by construction:
-LightGBM is trained on SMOTE-resampled data (which inflates the apparent
-positive rate), and Logistic Regression / Random Forest use
-class_weight="balanced" (which does the same). Their rankings are
-meaningful; their probabilities are not.
-
-Approach
---------
-Isotonic regression fitted on the CALIBRATION block — a slice of time that
-sits after training and before test, separated from both by an embargo.
-The model never trained on it and the test set never touches it, so the
-test-set calibration numbers reported after this are honest.
-
-Isotonic rather than Platt/sigmoid because it is non-parametric: it can
-correct an arbitrary monotone distortion, and there are enough
-calibration rows here to support it without overfitting (Platt is the
-better choice below roughly a thousand samples).
+Ranking metrics ignore calibration, and SMOTE / class_weight="balanced"
+inflate raw scores. The calibrator is fitted on the CALIB block, which the
+model never trained on and the test set never touches.
 """
 
 import numpy as np
@@ -52,12 +24,8 @@ logger = get_logger(__name__)
 
 def fit_calibrator(y_calib: np.ndarray, p_calib: np.ndarray, method: str = "isotonic"):
     """
-    Fit a post-hoc calibration map from raw scores to calibrated
-    probabilities, using held-out calibration data.
-
-    Operates on SCORES, not on the model — so the same function calibrates
-    the LSTM and the tree models identically, which sklearn's
-    CalibratedClassifierCV cannot do (it requires an sklearn estimator).
+    Fit an isotonic map from raw scores to probabilities on held-out data.
+    Works on scores rather than a model, so any model can be calibrated.
     """
     try:
         y_calib = np.asarray(y_calib)
@@ -97,14 +65,7 @@ def apply_calibrator(calibrator: dict, p: np.ndarray) -> np.ndarray:
 
 def calibration_report(y_true: np.ndarray, p_raw: np.ndarray,
                        p_cal: np.ndarray) -> dict:
-    """
-    Before/after summary for the README and the dashboard.
-
-    Brier score mixes calibration and discrimination; ECE isolates
-    calibration. Both are reported because a drop in ECE with an unchanged
-    ranking metric is the clean evidence that calibration — and only
-    calibration — is what changed.
-    """
+    """Before/after Brier score and ECE for the README and dashboard."""
     try:
         return {
             "brier_raw": float(brier_score_loss(y_true, p_raw)),

@@ -1,8 +1,5 @@
-# Requirements for Airflow's ISOLATED environment — install this in its own
-# venv/container, never alongside requirements.txt (the main project's
-# dependencies). See pipelines/sentrix_dag.py for why this separation is
-# required: Airflow hard-pins sqlalchemy<2.0 and older flask/werkzeug,
-# which conflict with FastAPI/MLflow's requirements in the main stack.
+# Airflow's own environment. Never install alongside requirements.txt:
+# Airflow pins sqlalchemy<2.0.
 #
 # Setup:
 #   python -m venv airflow-venv

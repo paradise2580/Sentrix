@@ -1,14 +1,6 @@
 """
-src/models/mlflow_tracking.py
-
-Role
-----
-Every training run's parameters, metrics, and model artifact get logged
-to MLflow — so instead of remembering "which XGBoost run scored best,"
-there's a browsable, permanent record. The winner on the shared evaluation
-set is then promoted to the "Production" stage in MLflow's Model Registry,
-which is what the API reports at /health — one source of truth for what is
-actually live.
+Logs every model's params, metrics and artifact to MLflow, and registers the
+best model as "Production" in the Model Registry.
 """
 
 import joblib
@@ -31,15 +23,8 @@ _EXPERIMENT = "sentrix-disruption-prediction"
 
 def _set_tracking_uri():
     """
-    Point both the tracking DB and the ARTIFACT store at
-    paths.mlflow_tracking_uri.
-
-    Setting only the tracking URI is a trap: MLflow keeps writing model
-    artifacts to ./mlruns in the working directory, so the run metadata and
-    the model binaries end up in two different places and the stray ./mlruns
-    (tens of MB of pickles) gets committed by the next careless `git add .`.
-    Creating the experiment with an explicit artifact_location keeps both
-    under artifacts/.
+    Point both the tracking DB and the artifact store at
+    paths.mlflow_tracking_uri, so nothing is written to ./mlruns.
     """
     cfg = load_config()
     tracking_dir = (get_project_root() / cfg["paths"]["mlflow_tracking_uri"]).resolve()
@@ -55,7 +40,7 @@ def _set_tracking_uri():
 
 def log_model_run(model_name: str, model_obj, params: dict, metrics: dict,
                   is_pytorch: bool = False, input_example=None) -> str:
-    """Log one model's params, metrics, and artifact as an MLflow run. Returns the run_id."""
+    """Log one model as an MLflow run. Returns the run_id."""
     try:
         _set_tracking_uri()
         with mlflow.start_run(run_name=model_name) as run:
@@ -65,17 +50,13 @@ def log_model_run(model_name: str, model_obj, params: dict, metrics: dict,
                 if isinstance(v, (int, float)) and k != "confusion_matrix"
             })
             if is_pytorch:
-                # MLflow's default 'pt2' traced-graph format requires a concrete
-                # example input to trace the forward pass through.
+                # The PyTorch flavour needs an example input to trace the model.
                 mlflow.pytorch.log_model(
                     model_obj, artifact_path="model",
                     input_example=input_example, serialization_format="pickle",
                 )
             else:
-                # Standard pickle serialization — skops (MLflow's newer default) flags
-                # XGBoost/LightGBM booster internals as "untrusted", which is a sensible
-                # default for THIRD-PARTY models but unnecessary friction for models we
-                # trained ourselves in this same pipeline.
+                # Plain pickle: skops rejects XGBoost/LightGBM internals.
                 mlflow.sklearn.log_model(
                     model_obj, artifact_path="model",
                     serialization_format=mlflow.sklearn.SERIALIZATION_FORMAT_PICKLE,
@@ -88,11 +69,7 @@ def log_model_run(model_name: str, model_obj, params: dict, metrics: dict,
 
 
 def log_all_trained_models() -> dict:
-    """
-    Reads the saved model artifacts + the evaluation comparison table and
-    logs every model as its own MLflow run, so the full picture (not just
-    the winner) is browsable in the MLflow UI.
-    """
+    """Log every saved model as its own MLflow run, using the evaluation table."""
     try:
         cfg = load_config()
         models_dir = get_project_root() / cfg["paths"]["models"]
@@ -121,9 +98,7 @@ def log_all_trained_models() -> dict:
             if name == "lstm":
                 import torch
                 from src.models.deep import DisruptionLSTM
-                # Architecture comes from the saved metadata, not config.yaml —
-                # editing config after training must not silently reshape the
-                # net a checkpoint is loaded into.
+                # Architecture comes from saved metadata, not config.yaml.
                 meta = joblib.load(models_dir / "lstm_meta.joblib")
                 model_obj = DisruptionLSTM(len(meta["feature_cols"]),
                                            meta["hidden_size"], meta["num_layers"])
@@ -144,11 +119,7 @@ def log_all_trained_models() -> dict:
 
 
 def register_best_model(run_ids: dict) -> None:
-    """
-    Registers the best model (by PR-AUC on the shared evaluation set) under
-    _REGISTRY_NAME and transitions it to the 'Production' stage. This is
-    the model the API loads — one call, one source of truth.
-    """
+    """Register the best model by PR-AUC and move it to the 'Production' stage."""
     try:
         _set_tracking_uri()
         load_config()

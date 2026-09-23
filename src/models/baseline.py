@@ -1,24 +1,6 @@
 """
-src/models/baseline.py
-
-Role
-----
-Establish the performance floor before reaching for anything advanced.
-You cannot claim XGBoost is genuinely better without a simpler model to
-beat it against — that comparison is the whole point of a baseline.
-
-Models
-------
-Logistic Regression  — the regulatory-friendly baseline. Simple, fast,
-                        coefficients are directly interpretable (credit
-                        risk teams often require a model like this to
-                        exist even if it isn't the one deployed).
-Random Forest         — a stronger tree baseline that captures
-                        non-linear interactions the linear model misses.
-
-Class imbalance is handled via
-class_weight="balanced" in both models — the config-driven default rather
-than a hardcoded assumption.
+Baseline models: Logistic Regression and Random Forest, both with
+class_weight="balanced". They set the bar the boosted models must beat.
 """
 
 from sklearn.linear_model import LogisticRegression
@@ -33,7 +15,7 @@ logger = get_logger(__name__)
 
 
 def build_logistic_regression() -> LogisticRegression:
-    """Construct a Logistic Regression classifier using config.yaml hyperparameters."""
+    """Build a Logistic Regression from config.yaml."""
     try:
         cfg = load_config()["model"]["logistic_regression"]
         model = LogisticRegression(
@@ -47,7 +29,7 @@ def build_logistic_regression() -> LogisticRegression:
 
 
 def build_random_forest() -> RandomForestClassifier:
-    """Construct a Random Forest classifier using config.yaml hyperparameters."""
+    """Build a Random Forest from config.yaml."""
     try:
         cfg = load_config()["model"]["random_forest"]
         model = RandomForestClassifier(

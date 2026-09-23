@@ -1,12 +1,6 @@
 """
-src/preprocessing/cleaner.py
-
-Role
-----
-Make raw data trustworthy before any feature is computed from it. Each
-cleaning concern is its own function so a failure is easy to isolate —
-e.g. "did outlier removal break this?" is answerable without re-reading
-the whole pipeline.
+Cleaning steps for raw data: missing values, outliers, types, duplicates.
+One function per step.
 """
 
 import pandas as pd
@@ -21,10 +15,7 @@ logger = get_logger(__name__)
 
 
 def handle_missing(df: pd.DataFrame, strategy: str = "median") -> pd.DataFrame:
-    """
-    Impute missing numeric values; drop rows missing critical identifiers
-    (seller_id, date columns) since those can't be safely imputed.
-    """
+    """Impute missing numerics; drop rows missing seller_id or dates."""
     try:
         df = df.copy()
         id_like_cols = [c for c in df.columns if "id" in c.lower() or "date" in c.lower()]

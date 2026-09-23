@@ -1,23 +1,9 @@
 """
-src/rag/chain.py
+RAG flow: question -> retrieve top-k chunks from ChromaDB -> grounded prompt
+-> LLM on Groq -> {answer, sources}.
 
-Role
-----
-Ties retrieval + the LLM together into the full RAG flow:
-
-    User question
-        -> embed + retrieve top-k relevant chunks from ChromaDB
-        -> inject chunks into a grounded prompt
-        -> Groq (Llama 3) generates a cited answer
-        -> return {answer, sources}
-
-No-key behaviour
------------------
-If GROQ_API_KEY isn't set, this returns the retrieved context directly
-with a clear notice instead of crashing — so the retrieval half of RAG
-(the part that doesn't need a paid/keyed API) is still fully demonstrable
-without a key. Add a real key to .env and the exact same function starts
-returning LLM-generated answers with no code changes.
+Without GROQ_API_KEY (or if no configured model is available), it returns
+the retrieved context instead of failing.
 """
 
 import os
@@ -34,15 +20,7 @@ logger = get_logger(__name__)
 
 
 def _groq_key() -> str:
-    """
-    Read the key at CALL time, not import time.
-
-    Reading it into a module constant means the value is frozen at the
-    first import. That is fine locally, where .env is loaded before
-    anything else, and wrong in a container or a test that sets the
-    variable after the module graph is already loaded — the key would be
-    present in the environment and the code would still report it missing.
-    """
+    """Read the key at call time, so a key set after import is still seen."""
     return os.getenv("GROQ_API_KEY", "")
 
 
@@ -66,18 +44,8 @@ def _build_prompt(question: str, chunks: list[dict]) -> str:
 
 def _generate(prompt: str, cfg: dict, groq_key: str):
     """
-    Call Groq, trying each configured model in turn.
-
-    Hosted model catalogues are not stable. `llama-3.3-70b-versatile` was
-    the configured model here and started returning 404 model_not_found
-    when Groq retired it — a dependency that changed underneath the project
-    without a single line of code changing. Pinning one model name means
-    the demo dies silently the day the provider moves on.
-
-    So `llm_model` is the preference and `llm_fallback_models` is the queue
-    behind it. A 404/model-not-found moves to the next candidate; any other
-    error (auth, rate limit, network) is raised, because those are real
-    failures the caller needs to see rather than route around.
+    Call Groq with `llm_model`, then each of `llm_fallback_models` if a
+    model has been retired (model_not_found). Other errors are raised.
     """
     from langchain_groq import ChatGroq
 
@@ -96,10 +64,7 @@ def _generate(prompt: str, cfg: dict, groq_key: str):
 
 
 def answer_question(question: str, top_k: int | None = None) -> dict:
-    """
-    The full RAG flow. Always retrieves real context from ChromaDB; only
-    the generation step depends on a Groq key being present.
-    """
+    """Full RAG flow. Retrieval always runs; generation needs a Groq key."""
     try:
         chunks = retrieve(question, top_k=top_k)
 
@@ -130,9 +95,7 @@ def answer_question(question: str, top_k: int | None = None) -> dict:
         response, model_used = _generate(prompt, cfg, groq_key)
 
         if response is None:
-            # Every candidate model was rejected by the provider. Retrieval
-            # still worked, so degrade to the same grounded-context answer
-            # the no-key path returns rather than failing the request.
+            # No configured model available: return the retrieved context.
             logger.warning("No configured Groq model was available — "
                            "returning retrieved context without generation")
             preview = "\n".join(f"- {c['text']}" for c in chunks)

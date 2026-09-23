@@ -1,21 +1,10 @@
 name: Keep-alive
 
-# Render's free plan spins a service down after 15 minutes idle and takes
-# ~50s to wake it back up — the delay a visitor sees on the dashboard while
-# wait_for_backend() polls /health (frontend/dashboard.py). Pinging both
-# services well inside that 15-minute window keeps them warm so a visitor
-# never triggers a cold start in the first place.
-#
-# Every 5, not every 10: GitHub's scheduler can delay a run by several
-# minutes under load, and a delayed */10 run risks landing just past
-# Render's 15-minute idle cutoff, which defeats the whole point.
-#
-# Note: GitHub disables scheduled workflows after 60 days with no commits
-# to the repo. Any commit (or a manual "Run workflow") re-arms it.
-#
-# Defaults to this repo's own Render URLs. Override by setting
-# SENTRIX_API_URL / SENTRIX_DASHBOARD_URL under Settings > Secrets and
-# variables > Actions > Variables — e.g. for a fork deployed under a
+# Pings both Render services every 5 minutes so they don't sleep (Render's
+# free plan sleeps after 15 idle minutes). GitHub may delay scheduled runs,
+# and disables them after 60 days without commits.
+# URLs can be overridden with the SENTRIX_API_URL / SENTRIX_DASHBOARD_URL
+# repository variables.
 # different service name.
 on:
   schedule:

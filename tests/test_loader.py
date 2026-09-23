@@ -38,12 +38,7 @@ def test_real_olist_tables_are_populated(skip_if_no_mysql):
 
 
 def test_signal_provenance_is_explicit(skip_if_no_mysql):
-    """
-    Every external signal row must declare its provenance: 0 = REAL (FRED),
-    1 = generated. No row may be ambiguous — this is what makes the
-    real/synthetic boundary provable in the database rather than just
-    claimed in the README.
-    """
+    """Every external signal row is flagged 0 (real, FRED) or 1 (generated)."""
     loader = DataLoader()
     bad = loader.read_query(
         "SELECT COUNT(*) n FROM external_signals "

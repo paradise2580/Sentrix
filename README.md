@@ -8,9 +8,13 @@
 
 **▶ [Live dashboard](https://sentrix-dashboard.onrender.com)** · **[API docs](https://sentrix-api-t1dw.onrender.com/docs)**
 
-> Hosted on a free tier. A scheduled keep-alive ping (`.github/workflows/keepalive.yml`)
-> pings both services every 5 minutes so they never hit Render's 15-minute idle sleep —
-> no cold-start wait for a visitor opening the link.
+> Hosted on a free tier, so both services sleep after 15 minutes idle and take
+> up to ~50s to wake. A keep-alive ping (`.github/workflows/keepalive.yml`) tries
+> to prevent that, but GitHub's scheduler runs low-traffic cron jobs on a
+> best-effort basis — it can lag by hours, so a cold start on first load is
+> still possible. The dashboard handles it gracefully with a single patient
+> health probe rather than a wall of retries; if you land on a "starting up"
+> message, give it under a minute.
 
 <!-- Add a dashboard screenshot here — save it as docs/dashboard.png and uncomment:
 ![SENTRIX dashboard](docs/dashboard.png)
@@ -141,6 +145,8 @@ Olist CSVs  →  MySQL  →  feature engineering  →  purged temporal split
 
 Airflow orchestrates the pipeline, MLflow tracks every run, DVC versions the data, and Evidently watches for drift in production.
 
+The reasoning behind each design decision, and the experiments that led to modelling orders instead of sellers, are in [docs/DESIGN.md](docs/DESIGN.md).
+
 ---
 
 ## Run it locally
@@ -182,15 +188,28 @@ flake8 .           # lint, blocking in CI
 ## Project structure
 
 ```
-api/          FastAPI serving layer
-src/          feature engineering, models, evaluation, calibration
-frontend/     Streamlit dashboard
-pipelines/    Airflow DAGs
-scripts/      one-off utilities and report generators
-tests/        pytest suite
-docker/       Dockerfiles for each service
-config/       YAML configuration
-notebooks/    exploratory analysis
+Backend / API
+    api/            FastAPI serving layer — app.py, schemas.py
+
+Frontend
+    frontend/       Streamlit dashboard — dashboard.py
+
+Machine learning
+    src/            feature engineering, models, evaluation, calibration
+    notebooks/      exploratory analysis
+
+Orchestration
+    pipelines/      Airflow DAGs
+
+Testing
+    tests/          pytest suite — 53 tests
+
+Tooling
+    scripts/        one-off utilities and report generators
+
+Infra
+    docker/         per-service Dockerfiles
+    config/         YAML configuration
 ```
 
 ---

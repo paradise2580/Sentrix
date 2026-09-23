@@ -1,11 +1,6 @@
 """
-notebooks/_build_eda_notebook.py
-
-Not part of the src/ package — this is a one-time generator script that
-writes notebooks/eda.ipynb with real, executable cells. Kept separate from
-the notebook itself so the analysis logic is version-controllable as plain
-Python, while the .ipynb remains the single allowed notebook artifact
-(per Phase 3 of the implementation plan).
+Generates notebooks/eda.ipynb, so the analysis lives in plain Python under
+version control.
 
 Run with:
     python notebooks/_build_eda_notebook.py

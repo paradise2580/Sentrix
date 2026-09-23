@@ -1,9 +1,6 @@
 """
-tests/test_fred_signals.py
-
-Tests the REAL FRED commodity-signal path without hitting the live API
-(no network dependency in CI). The FRED response shape is stubbed exactly
-as the API returns it, including "." for missing observations.
+Tests the FRED commodity-signal path with a stubbed API response (no network),
+including FRED's "." for missing values.
 """
 
 import numpy as np

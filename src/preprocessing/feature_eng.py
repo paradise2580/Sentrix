@@ -1,39 +1,13 @@
 """
-src/preprocessing/feature_eng.py
+LEGACY: the seller-day feature table from the earlier seller-level model.
 
-Role
-----
-Builds the model-ready feature table from the real Olist data (plus the one
-clearly-flagged synthetic signal layer).
+The live model uses preprocessing/order_features.py. This module is kept
+because scripts/label_screen.py and scripts/ablation.py import it to
+reproduce the results that led to the switch (see docs/DESIGN.md).
 
-Grain
------
-One row per (seller_id, as_of_date) — a "seller-day" panel. Sellers are the
-suppliers whose delivery risk SENTRIX predicts.
-
-Label (REAL)
-------------
-    late_rate over the next 30 days >= threshold  ->  1
-
-Derived from Olist's real order_delivered_customer_date vs
-order_estimated_delivery_date. Nothing about the outcome is invented.
-
-This is a RATE, not "any late order". See attach_label for the ablation that
-forced the change: the previous any-late label was so volume-confounded that
-ranking sellers by order count alone beat the full model.
-
-Leakage control
----------------
-Every feature looks strictly BACKWARD from as_of_date; the label looks
-strictly FORWARD. Rolling windows are computed with .shift(1) so the
-current day's own outcome can never leak into its own features.
-
-Feature families
-----------------
-1. Delivery history   (REAL)      rolling late counts/rates, volume, recency
-2. Review sentiment   (REAL)      rolling mean review score, bad-review counts
-3. External signals   (SYNTHETIC) weather / port / commodity by seller state
-4. Peer & profile     (REAL)      lifetime late rate, state-peer late rate
+Grain: one row per (seller_id, as_of_date). Label: seller's late rate over
+the next 30 days >= late_rate_threshold. Features look only backward
+(rolling windows use shift(1)); the label looks only forward.
 """
 
 import numpy as np
@@ -47,24 +21,14 @@ import sys
 
 logger = get_logger(__name__)
 
-# The RETIRED seller-day label. This module is no longer the project's
-# feature builder — SENTRIX models orders (see preprocessing/order_features)
-# because scripts/label_screen2.py showed the seller-level target does not
-# persist across the window boundary. The builder is kept because the
-# screening scripts that produced that evidence import it, and a reader who
-# wants to reproduce the finding needs the code that generated it.
-#
-# It deliberately does NOT read config.yaml's target_column any more: that
-# name now belongs to the order-level label.
+# Label of the retired seller-level model (not config.yaml's target_column,
+# which now belongs to the order-level model).
 TARGET = "high_late_rate_next_30d"
 
 
 # ---------------------------------------------------------------- extraction
 def load_seller_day_orders() -> pd.DataFrame:
-    """
-    Real, delivered orders joined to their seller, collapsed to one row per
-    (seller_id, order_date) with that day's order count and late count.
-    """
+    """Delivered orders per (seller_id, order_date): order count and late count."""
     loader = DataLoader()
     sql = """
         SELECT oi.seller_id,
@@ -123,9 +87,8 @@ def load_signals_wide() -> pd.DataFrame:
 # ---------------------------------------------------------------- panel
 def build_seller_day_panel(orders: pd.DataFrame, active_min_orders: int) -> pd.DataFrame:
     """
-    Continuous daily grid per seller, from their first to last active day.
-    Sellers below active_min_orders total orders are dropped — too little
-    history to model, and they'd dominate the panel with empty rows.
+    Daily grid per seller from first to last active day. Sellers with fewer
+    than active_min_orders orders are dropped.
     """
     totals = orders.groupby("seller_id")["orders_n"].sum()
     keep = totals[totals >= active_min_orders].index
@@ -133,8 +96,7 @@ def build_seller_day_panel(orders: pd.DataFrame, active_min_orders: int) -> pd.D
     logger.info(f"Kept {len(keep):,} sellers with >= {active_min_orders} orders")
 
     if orders.empty:
-        # Every seller filtered out by active_min_orders — return an empty
-        # panel with the right columns rather than letting pd.concat([]) raise.
+        # Nothing left after filtering: return an empty panel with the right columns.
         logger.warning("No sellers met the activity threshold; empty panel returned")
         return pd.DataFrame(columns=["seller_id", "as_of_date", "orders_n",
                                       "late_n", "avg_delay_days"])
@@ -193,7 +155,7 @@ def add_delivery_history_features(panel: pd.DataFrame, windows: list[int]) -> pd
 
 def add_review_features(panel: pd.DataFrame, reviews: pd.DataFrame,
                          windows: list[int]) -> pd.DataFrame:
-    """Family 2 (REAL) — rolling sentiment from genuine customer review scores."""
+    """Family 2 (REAL): rolling review-score features."""
     panel = panel.merge(
         reviews.rename(columns={"review_date": "as_of_date"}),
         on=["seller_id", "as_of_date"], how="left",
@@ -217,7 +179,7 @@ def add_review_features(panel: pd.DataFrame, reviews: pd.DataFrame,
 
 def add_external_signal_features(panel: pd.DataFrame, sellers: pd.DataFrame,
                                   signals: pd.DataFrame, windows: list[int]) -> pd.DataFrame:
-    """Family 3 (SYNTHETIC) — joined on real seller state and real date."""
+    """Family 3 (SYNTHETIC): joined on seller state and date."""
     panel = panel.merge(sellers[["seller_id", "seller_state"]], on="seller_id", how="left")
     panel = panel.merge(
         signals.rename(columns={"signal_date": "as_of_date"}),
@@ -234,7 +196,7 @@ def add_external_signal_features(panel: pd.DataFrame, sellers: pd.DataFrame,
 
 
 def add_profile_features(panel: pd.DataFrame) -> pd.DataFrame:
-    """Family 4 (REAL) — expanding lifetime late rate + state-peer comparison."""
+    """Family 4 (REAL): lifetime late rate and state-peer comparison."""
     panel = panel.sort_values(["seller_id", "as_of_date"])
     cum_late = panel.groupby("seller_id")["late_count_30d"].cumsum()
     cum_ord = panel.groupby("seller_id")["order_count_30d"].cumsum()
@@ -247,9 +209,7 @@ def add_profile_features(panel: pd.DataFrame) -> pd.DataFrame:
     return panel
 
 
-# Columns computed from the FUTURE. They exist only to build the label and
-# must never reach a model — hence one place to name them and one place to
-# drop them.
+# Forward-looking columns used only to build the label; always dropped.
 FORWARD_ONLY_COLUMNS = ["late_rate_next_30d", "forward_orders"]
 
 
@@ -257,36 +217,12 @@ def attach_label(panel: pd.DataFrame, horizon_days: int,
                  late_rate_threshold: float, min_forward_orders: int,
                  target_col: str = TARGET) -> pd.DataFrame:
     """
-    REAL forward label: over orders placed in (as_of_date, as_of_date +
-    horizon], does this seller's LATE RATE exceed late_rate_threshold?
+    Forward label: does the seller's late rate over (as_of_date,
+    as_of_date + horizon] reach late_rate_threshold?
 
-    Why a rate and not "any late order"
-    -----------------------------------
-    The original label was `any late delivery in the next 30 days`. With a
-    per-order late rate around 8%, that is close to a deterministic function
-    of order count: ship 100 orders and P(at least one late) is ~99.97%;
-    ship 3 and it is 22%. So the label mostly encoded how BUSY a seller was,
-    not how RISKY.
-
-    That was not a suspicion, it was measured. scripts/ablation.py ranked
-    sellers by `order_count_30d` alone, with no model at all, and scored
-    PR-AUC 0.4455 against the full 47-feature model's 0.3911. A single column
-    beat the champion by 14%, and adding the other 44 features to the three
-    volume ones made things worse.
-
-    A rate divides that confound out: a seller shipping 100 orders with 8
-    late looks exactly like a seller shipping 10 with 0.8 late.
-
-    Eligibility
-    -----------
-    A rate needs a denominator. Seller-days with fewer than
-    min_forward_orders in the forward window are left UNLABELLED rather than
-    labelled, because 0/1 and 1/1 are noise. This does condition the modelled
-    population on future activity, which is worth stating plainly: the model
-    is trained and evaluated on sellers who go on to trade. The alternative —
-    scoring a seller who ships nothing as "0% late" — would conflate "did not
-    ship" with "shipped perfectly", which is a worse distortion than the one
-    it avoids.
+    A rate rather than "any late order", because "any late order" mostly
+    measured how many orders a seller shipped. Seller-days with fewer than
+    min_forward_orders forward orders are left unlabelled.
     """
     panel = panel.sort_values(["seller_id", "as_of_date"])
 
@@ -357,9 +293,7 @@ def build_feature_table() -> pd.DataFrame:
             min_forward_orders=cfg["preprocessing"]["min_forward_orders"],
         )
 
-        # Drop the raw counts AND every column derived from the future. The
-        # forward columns exist only to build the label; leaving even one of
-        # them in the feature table would hand the model the answer.
+        # Drop raw counts and every forward-looking column.
         panel = panel.drop(
             columns=["orders_n", "late_n", "avg_delay_days"] + FORWARD_ONLY_COLUMNS,
             errors="ignore",

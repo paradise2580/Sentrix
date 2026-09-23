@@ -1,25 +1,8 @@
 """
-src/models/boosting.py
+XGBoost and LightGBM, with Optuna tuning of XGBoost for PR-AUC.
 
-Role
-----
-The workhorses. Gradient-boosted trees usually win on tabular data like
-this one, and Optuna tunes them systematically against PR-AUC rather than
-by hand-guessing values.
-
-Why the tuning CV is a TimeSeriesSplit
---------------------------------------
-A shuffled StratifiedKFold over a seller-day panel scores each fold with a
-model fitted on rows from that fold's own future — and, because rolling
-features and a 30-day forward label make neighbouring rows near-duplicates,
-also on rows that are almost copies of the ones being scored. Both inflate
-the tuning score, so Optuna optimises for the wrong thing and picks
-hyperparameters (usually: deeper, more trees) that overfit.
-
-The outer split in trainer.py is purged and embargoed for exactly this
-reason. Leaving the inner tuning loop shuffled would undo that work one
-level down, which is a very easy mistake to ship because every number it
-produces looks better.
+Tuning uses TimeSeriesSplit, not shuffled k-fold, so each fold is scored by
+a model that has only seen the past.
 """
 
 import numpy as np
@@ -35,12 +18,12 @@ import sys
 
 logger = get_logger(__name__)
 
-# Optuna's own logs are noisy at INFO level; keep it to warnings only
+# Keep Optuna logs to warnings only.
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 def build_xgboost(params: dict | None = None) -> XGBClassifier:
-    """Construct an XGBClassifier — either config.yaml defaults or tuned params."""
+    """Build an XGBClassifier from config defaults or tuned params."""
     try:
         cfg = load_config()["model"]["xgboost"]
         params = params or {
@@ -61,7 +44,7 @@ def build_xgboost(params: dict | None = None) -> XGBClassifier:
 
 
 def build_lightgbm(params: dict | None = None) -> LGBMClassifier:
-    """Construct an LGBMClassifier — either config.yaml defaults or tuned params."""
+    """Build an LGBMClassifier from config defaults or tuned params."""
     try:
         cfg = load_config()["model"]["lightgbm"]
         params = params or {
@@ -83,18 +66,11 @@ def build_lightgbm(params: dict | None = None) -> LGBMClassifier:
 
 def tune_xgboost(X, y) -> dict:
     """
-    Hyperparameter search for XGBoost via Optuna, optimising PR-AUC under a
-    forward-chaining TimeSeriesSplit.
+    Tune XGBoost with Optuna, maximising PR-AUC under TimeSeriesSplit.
 
-    X and y must arrive in chronological order — TimeSeriesSplit slices
-    positionally, so an unsorted matrix silently degrades into a random
-    split. trainer.prepare_data guarantees the ordering.
-
-    Tuning runs on the most recent `tune_sample_rows` rows rather than the
-    full panel. That is a deliberate trade, not a shortcut: hyperparameter
-    RANKING is stable under subsampling while fit time is not, and the
-    recent tail is the regime the model will actually be scored on. The
-    chosen params are then refit on the complete training set.
+    X and y must be in chronological order. Tuning uses the most recent
+    `tune_sample_rows` rows to save time; the best params are then refit on
+    the full training set.
     """
     try:
         cfg = load_config()

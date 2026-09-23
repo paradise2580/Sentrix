@@ -1,30 +1,9 @@
 """
-src/evaluation/run_evaluation.py
+Scores every saved model on one shared test set, ranks them by PR-AUC,
+calibrates the winner on the CALIB block, and picks a cost-based threshold.
 
-Role
-----
-Loads every saved model, scores them all on ONE shared evaluation set,
-ranks them by PR-AUC, calibrates the winner on held-out data, and picks a
-cost-aware operating threshold. The winner is what gets registered as
-"Production" in MLflow.
-
-The shared evaluation index
----------------------------
-Ranking models by PR-AUC only means something if they were scored on the
-same rows: PR-AUC depends on the base rate, so a table mixing two row sets
-looks authoritative and says nothing.
-
-The sequence model is the awkward one. Before left-padding it could not
-score a seller's first `seq_len` days at all, which quietly removed ~39%
-of the test block — and not at random: early seller-days run a much higher
-late rate, so the surviving base rate fell from 22.5% to 15.0% and every
-model was then compared on that skewed remainder.
-
-With left-padded sequences the LSTM scores every row, so the evaluation
-index is simply the whole block. This module still routes every model
-through that one index and `compare_models` still refuses mismatched
-lengths — the invariant is worth keeping even now that satisfying it is
-easy.
+All models must be scored on the same rows, because PR-AUC depends on the
+base rate.
 
 Run with:
     python -m src.evaluation.run_evaluation
@@ -65,10 +44,7 @@ def load_lstm_model():
     models_dir = get_project_root() / load_config()["paths"]["models"]
     meta = joblib.load(models_dir / "lstm_meta.joblib")
 
-    # A checkpoint saved before the metadata carried its own architecture is
-    # not safely loadable: config.yaml may have changed since, and silently
-    # reshaping the net around a checkpoint produces a model that loads and
-    # predicts nonsense. Say so instead.
+    # Refuse old checkpoints without saved architecture metadata.
     missing = [k for k in ("hidden_size", "num_layers", "feature_cols") if k not in meta]
     if missing:
         raise ValueError(
@@ -87,13 +63,9 @@ def load_lstm_model():
 
 def _score_block(block_df: pd.DataFrame, X_block: np.ndarray, y_block: np.ndarray,
                  bundle: dict, lstm_model, lstm_meta) -> dict:
-    """
-    Score every model on one block (calibration or test), restricted to the
-    rows the LSTM can reach. Returns {"y": ..., "probs": {name: array}}.
-    """
+    """Score every model on one block. Returns {"y": ..., "probs": {name: array}}."""
     if lstm_model is None:
-        # No sequence model in this run — every model scores every row, so
-        # the shared evaluation set is simply the whole block.
+        # No LSTM: every model scores the whole block.
         probs = {}
         pos = np.arange(len(block_df))
     else:
@@ -121,18 +93,10 @@ def run_full_evaluation() -> pd.DataFrame:
         data = prepare_data()
         bundle = data["bundle"]
 
-        # The sequence model is optional. SENTRIX models orders, not
-        # seller-days, and a per-seller sliding window over 100k orders is
-        # both memory-hostile and conceptually wrong — an order is not a
-        # timestep in a seller's history, it is an independent shipment.
-        # If lstm artifacts are present they are evaluated alongside the
-        # rest; if not, the tabular models score every row.
+        # The LSTM is optional; it is evaluated only if its artifacts exist.
         try:
             lstm_model, lstm_meta = load_lstm_model()
-            # Artifacts from an earlier grain load fine and predict nonsense:
-            # a checkpoint trained on 46 seller-day features will happily
-            # accept a matrix of order features and return numbers. Compare
-            # the feature space and refuse rather than report a score.
+            # Refuse a checkpoint trained on a different feature space.
             trained_on = list(lstm_meta.get("feature_cols", []))
             if trained_on != list(bundle["feature_names_out"]):
                 logger.warning(

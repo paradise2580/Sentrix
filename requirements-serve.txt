@@ -1,20 +1,8 @@
-# Serving-only dependencies. Deliberately NOT requirements.txt.
-#
-# The API does no model inference at request time — /sellers, /explain,
-# /summary and /metrics all read rows that generate_predictions.py computed
-# offline. So the serving image needs none of the training stack:
-#
-#   torch                ~800 MB   sequence model, training only
-#   xgboost + lightgbm   ~200 MB   training only
-#   shap                  ~50 MB   attributions are precomputed into the DB
-#   mlflow               ~200 MB   registry lives with the training environment
-#   optuna, imbalanced-learn       training only
-#
-# Dropping them is the difference between an image no free tier will run and
-# one that fits comfortably in 512 MB.
-#
-# Embeddings come from chromadb's bundled ONNX MiniLM rather than
-# sentence-transformers: identical model, onnxruntime instead of PyTorch.
+# Serving-only dependencies for the deployed API and dashboard.
+# The API only reads precomputed results, so the training stack (torch,
+# xgboost, lightgbm, shap, mlflow, optuna, imbalanced-learn) is left out to
+# fit a 512 MB free instance. Embeddings use chromadb's ONNX MiniLM instead
+# of sentence-transformers (same model, no PyTorch).
 
 # --- API ---
 fastapi

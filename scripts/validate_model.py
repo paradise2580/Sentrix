@@ -1,22 +1,10 @@
 """
-scripts/validate_model.py
-
-Role
-----
-The model-performance gate CI runs on every push. Loads the
-evaluation results and checks the best model's PR-AUC against the
-threshold in config.yaml (monitoring.pr_auc_gate). Exits non-zero — which
-fails the GitHub Actions job — if the model doesn't clear the bar.
-
-This is what turns "run pytest" into genuine MLOps: a code change that
-accidentally degrades the model (a bad feature, a broken preprocessing
-step) gets caught here even if every unit test still passes, because
-unit tests check that code RUNS correctly, not that the model it produces
-is any good.
+Model gate for CI: fails (exit 1) if the best model's PR-AUC is below
+monitoring.pr_auc_gate in config.yaml. Unit tests check that code runs;
+this checks that the model is still good enough.
 
 Run with:
     python scripts/validate_model.py
-Exit code 0 = pass, 1 = fail (used directly by CI).
 """
 
 import sys

@@ -1,22 +1,6 @@
 """
-scripts/render_results.py
-
-Regenerates the README's results section directly from the evaluation
-artifacts, replacing everything between the RESULTS markers.
-
-Why this is a script and not a paragraph someone types
-------------------------------------------------------
-The previous README quoted PR-AUC 0.400 for Logistic Regression while
-artifacts/evaluation/model_comparison.csv said 0.3694. It also quoted the
-base rate as 8.11% in one place and 17% in another. Nobody lied — the
-numbers were transcribed once and the model was retrained several times
-afterwards, and hand-copied numbers do not follow their source.
-
-Anyone reading a repo whose stated results disagree with its own committed
-artifacts stops trusting every other number in it, which is a bad trade for
-five minutes of copy-paste. So the README's numbers are generated. If they
-are ever wrong, the artifacts are wrong, and that is a real bug rather than
-a stale paragraph.
+Regenerates the README results section (between the RESULTS markers) from
+artifacts/evaluation/, so the README can't drift from the real numbers.
 
 Run with:
     python scripts/render_results.py

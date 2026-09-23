@@ -1,9 +1,6 @@
 """
-tests/conftest.py
-
-Shared fixtures. Unit tests use small in-memory frames shaped exactly like
-the real Olist-derived tables — fast, deterministic, no infrastructure.
-Integration-flavoured tests skip cleanly when MySQL/ChromaDB aren't up.
+Shared fixtures: small in-memory frames shaped like the real tables.
+Tests that need MySQL or ChromaDB skip when they aren't available.
 """
 
 import sys
@@ -86,11 +83,8 @@ def sample_feature_table() -> pd.DataFrame:
         "state_peer_late_rate": rng.uniform(0, 0.3, n),
         "seller_tenure_days": rng.integers(0, 700, n),
         "seller_state": rng.choice(["SP", "RJ", "PR"], n),
-        # Both labels are present on purpose. "high_late_rate_next_30d" is the
-        # retired seller-day target, still exercised by the feature-builder
-        # tests; the configured target is whatever config.yaml currently names,
-        # so model tests keep working across a target rename instead of
-        # silently testing a stale column.
+        # Both the retired seller-level label and the configured target are
+        # included, so both feature-builder and model tests can use this table.
         "high_late_rate_next_30d": rng.integers(0, 2, n),
         load_config()["model"]["target_column"]: rng.integers(0, 2, n),
     })

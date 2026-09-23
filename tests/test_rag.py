@@ -1,9 +1,6 @@
 """
-tests/test_rag.py — unit tests for the RAG layer (indexer, retriever, chain).
-
-Chunking logic is pure and always tested. Retrieval against the live
-ChromaDB index is an integration-flavored test that skips cleanly if the
-index hasn't been built yet, rather than failing the suite.
+RAG tests. Chunking is always tested; retrieval skips if the ChromaDB index
+hasn't been built.
 """
 
 import pytest

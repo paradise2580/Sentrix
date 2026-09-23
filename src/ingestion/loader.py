@@ -1,12 +1,6 @@
 """
-src/ingestion/loader.py
-
-Role
-----
-The single door through which all structured data enters and leaves
-MySQL. Nothing else in the codebase should call pandas.to_sql or
-pandas.read_sql directly — everything routes through DataLoader so
-connection handling, logging, and error wrapping stay in one place.
+DataLoader: all reads and writes between pandas and the database go
+through here.
 """
 
 import pandas as pd
@@ -30,9 +24,7 @@ class DataLoader:
                  chunksize: int = 5000) -> None:
         """Write a DataFrame into a MySQL table."""
         try:
-            # NOTE: method="multi" builds one giant multi-VALUES statement per
-            # chunk, which blows past MySQL's max_allowed_packet on wide/large
-            # tables. Default (row-wise executemany) is slower but safe at any size.
+            # No method="multi": large chunks exceed MySQL's max_allowed_packet.
             df.to_sql(
                 table, self.engine, if_exists=if_exists,
                 index=False, chunksize=chunksize,
@@ -63,7 +55,7 @@ class DataLoader:
             raise SentrixException(e, sys)
 
     def truncate_table(self, table: str) -> None:
-        """Empty a table without dropping its schema — used before a full reload."""
+        """Empty a table but keep its schema."""
         try:
             with self.engine.begin() as conn:
                 conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))

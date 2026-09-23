@@ -1,42 +1,13 @@
 """
-src/preprocessing/embedder.py
+Turns text into vectors for the RAG index.
 
-Role
-----
-Turns text into vectors for the RAG layer — seller prediction summaries
-and real Olist customer reviews, indexed in ChromaDB and searched at
-query time.
+Backends, tried in order:
+  1. ONNX all-MiniLM-L6-v2 (bundled with chromadb, no PyTorch needed)
+  2. sentence-transformers (same model, heavier)
+  3. TF-IDF fitted on the corpus (offline fallback, word overlap only)
 
-Three backends, tried in order
-------------------------------
-1. **ONNX MiniLM** (`all-MiniLM-L6-v2`, via chromadb's bundled runtime).
-   The default. Same model as sentence-transformers, but it runs on
-   onnxruntime — tens of megabytes instead of the ~800 MB PyTorch drags
-   in. That difference is what makes the API deployable on a free tier at
-   all, so the light path is the primary one rather than a compromise.
-2. **sentence-transformers**. Used if it is already installed and ONNX is
-   unavailable. Identical vectors, much heavier dependency.
-3. **TF-IDF**, fit locally on the corpus. Zero network dependency, so RAG
-   still works end to end in a sandbox with no model download. Retrieval
-   mechanics are identical; semantic quality is plainly worse — it matches
-   on shared words, not shared meaning.
-
-Why the backend is written to disk
------------------------------------
-Indexing and querying happen in different processes. If indexing ran with
-MiniLM (384-d) and a later query process silently fell back to TF-IDF,
-the query vector would land in a different space from the documents.
-ChromaDB would either raise on the dimension mismatch or, if the widths
-happened to agree, return confidently ranked nonsense. So the backend
-chosen at index time is persisted and asserted at query time.
-
-A note on stop words
---------------------
-The TF-IDF path deliberately does NOT use `stop_words="english"`. Roughly
-half this corpus is Brazilian Portuguese review text, so an English stop
-list strips almost nothing from it while removing useful English tokens
-from the prediction summaries — the worst of both. Filtering by document
-frequency (`max_df`) drops boilerplate in whatever language it appears.
+The backend used at index time is saved to disk and checked at query time,
+so queries and documents are always embedded the same way.
 """
 
 from functools import lru_cache
@@ -76,14 +47,11 @@ def _backend_manifest_path() -> Path:
 # --------------------------------------------------------------- backends
 @lru_cache(maxsize=1)
 def _try_onnx():
-    """
-    chromadb ships an ONNX build of all-MiniLM-L6-v2. Downloads once on
-    first use, then runs locally with no torch.
-    """
+    """ONNX build of all-MiniLM-L6-v2 shipped with chromadb."""
     try:
         from chromadb.utils import embedding_functions
         fn = embedding_functions.ONNXMiniLM_L6_V2()
-        fn(["warmup"])                      # force the download/init now, not mid-index
+        fn(["warmup"])                      # download/initialise now, not mid-index
         logger.info("Embedding backend: ONNX MiniLM (all-MiniLM-L6-v2, no torch)")
         return fn
     except Exception as e:
@@ -130,9 +98,8 @@ def _fit_tfidf(texts: list[str]):
     global _tfidf_vectorizer
     from sklearn.feature_extraction.text import TfidfVectorizer
 
-    # No English stop list — see the module docstring. max_df drops
-    # boilerplate that appears in nearly every document (the shared
-    # sentence templates) regardless of language.
+    # No English stop list: much of the corpus is Portuguese. max_df drops
+    # words that appear in almost every document instead.
     _tfidf_vectorizer = TfidfVectorizer(max_features=4096, max_df=0.6, min_df=2)
     _tfidf_vectorizer.fit(texts)
 
@@ -172,11 +139,8 @@ def indexed_backend() -> dict | None:
 # ---------------------------------------------------------------- public
 def embed_texts(texts: list[str], fit: bool = False) -> np.ndarray:
     """
-    Embed a list of strings into an (n_texts, dim) array.
-
-    fit=True is index time: it fits the TF-IDF vectorizer (if that is the
-    active backend) and records which backend built the index. fit=False
-    is query time and reuses whatever indexing chose.
+    Embed strings into an (n_texts, dim) array. fit=True at index time
+    (fits TF-IDF if used and records the backend); fit=False at query time.
     """
     try:
         backend = _get_backend()
@@ -217,7 +181,7 @@ def embed_texts(texts: list[str], fit: bool = False) -> np.ndarray:
 
 
 def embed_single(text: str) -> np.ndarray:
-    """Embed one string — the query-time convenience wrapper."""
+    """Embed one query string."""
     return embed_texts([text], fit=False)[0]
 
 

@@ -1,27 +1,8 @@
 """
-src/models/deep.py
+Optional PyTorch LSTM over per-seller sequences of scaled features.
 
-Role
-----
-Trees see a single snapshot of a seller's current feature values. The LSTM
-sees the SEQUENCE — the shape of a build-up over the preceding
-`sequence_length` days — which is the pattern the EDA showed exists
-(disruption rate moves in waves, not independently day to day).
-
-Two things this module is careful about
----------------------------------------
-1. It consumes ALREADY-SCALED features. The sequence frame handed in comes
-   from preprocessing.transform_to_frame, so the LSTM sees exactly the same
-   representation as the tabular models. Feeding it raw columns would put
-   an unscaled `days_since_last_late` of 9999 next to a `late_rate` of
-   0.08 and saturate the gates on the first forward pass.
-
-2. It scores EVERY row and reports which rows it scored. Sequences are
-   left-padded (see SupplierSequenceDataset) so a seller with three days
-   of history still gets a prediction, and the returned index lets the
-   evaluator line every model up on identical rows. Without that, PR-AUC
-   values computed over different row sets end up printed in one ranked
-   table, and the ranking means nothing.
+Not in the default training run: orders are independent shipments, not a
+time series. Kept so it can be compared with --stages lstm.
 """
 
 import numpy as np
@@ -42,33 +23,12 @@ TARGET = load_config()["model"]["target_column"]
 
 class SupplierSequenceDataset(Dataset):
     """
-    Fixed-length sliding-window sequences per seller, so the LSTM sees a
-    (seq_len, n_features) tensor per sample instead of a single row.
+    Fixed-length sliding windows per seller: one (seq_len, n_features) tensor
+    per row.
 
-    Sequences are LEFT-PADDED
-    -------------------------
-    A seller's day 3 has only two prior days of history, not thirty. The
-    obvious handling — skip any row without a full window — has two costs
-    that are easy to miss:
-
-    1. It silently shrinks the evaluation set. Dropping every seller's
-       first 30 days removed 39% of the test block here (76,815 rows down
-       to 46,715), and the rows it removed were not a random sample:
-       early seller-days carry a higher late rate, so the surviving base
-       rate fell from 16.8% to 15.0%. Every model was then compared on
-       that smaller, easier subset.
-    2. It cannot score a new seller at all, which is precisely when a
-       delivery-risk score is most useful.
-
-    So short windows are padded at the FRONT with zeros. The features are
-    already standardised when they reach here, so a zero row is the
-    training mean — i.e. "no information", which is exactly what an
-    unobserved day is. Every row in every block gets a prediction, and the
-    evaluation set is the whole block.
-
-    Exposes `row_index`: the DataFrame index label of the row each sample
-    PREDICTS (the row at the end of the window), so predictions can be
-    joined back to the source frame.
+    Short histories are left-padded with zeros (the scaled mean), so every
+    row gets a prediction and the evaluation set is not shrunk. `row_index`
+    maps each sample back to the row it predicts.
     """
 
     def __init__(self, df: pd.DataFrame, feature_cols: list[str], seq_len: int):
@@ -104,7 +64,7 @@ class SupplierSequenceDataset(Dataset):
 
 
 class DisruptionLSTM(nn.Module):
-    """A small LSTM classifier: sequence in, disruption-probability logit out."""
+    """Small LSTM classifier: sequence in, logit out."""
 
     def __init__(self, n_features: int, hidden_size: int, num_layers: int,
                  dropout: float = 0.0):
@@ -126,13 +86,9 @@ class DisruptionLSTM(nn.Module):
 
 def train_lstm(seq_df: pd.DataFrame, feature_cols: list[str]) -> tuple[DisruptionLSTM, dict]:
     """
-    Train the LSTM on sliding-window sequences.
-
-    seq_df : scaled frame from preprocessing.transform_to_frame, containing
-             the feature columns plus seller_id, as_of_date and the label.
-
-    Returns the trained model and the metadata needed to rebuild identical
-    sequences at inference time.
+    Train on sequences built from seq_df (the scaled frame from
+    preprocessing.transform_to_frame). Returns the model and the metadata
+    needed to rebuild it.
     """
     try:
         full_cfg = load_config()
@@ -153,10 +109,7 @@ def train_lstm(seq_df: pd.DataFrame, feature_cols: list[str]) -> tuple[Disruptio
                                cfg["num_layers"], cfg.get("dropout", 0.0))
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg["learning_rate"])
 
-        # pos_weight compensates for class imbalance inside the loss itself,
-        # which is the sequence-model equivalent of class_weight="balanced".
-        # SMOTE is not an option here: interpolating between two sequences
-        # produces a trajectory no seller ever had.
+        # pos_weight handles class imbalance in the loss (no SMOTE for sequences).
         n_pos = float(dataset.labels.sum())
         n_neg = float(len(dataset.labels) - n_pos)
         pos_weight = torch.tensor([n_neg / max(n_pos, 1.0)])
@@ -186,17 +139,7 @@ def train_lstm(seq_df: pd.DataFrame, feature_cols: list[str]) -> tuple[Disruptio
 @torch.no_grad()
 def predict_lstm(model: DisruptionLSTM, seq_df: pd.DataFrame,
                  meta: dict) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Run inference over a scaled sequence frame.
-
-    Returns
-    -------
-    (probs, row_index)
-        probs      predicted probability per scored row
-        row_index  the DataFrame index labels those probabilities belong
-                   to — the caller uses this to align every other model
-                   onto the same evaluation rows.
-    """
+    """Predict on a scaled sequence frame. Returns (probs, row_index)."""
     try:
         model.eval()
         dataset = SupplierSequenceDataset(seq_df, meta["feature_cols"], meta["seq_len"])

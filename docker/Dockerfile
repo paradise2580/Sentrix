@@ -1,7 +1,5 @@
-# SENTRIX API — production container image.
-# Multi-stage build keeps the final image lean: dependencies compile in the
-# builder stage, only the installed packages + app code ship in the runtime
-# stage.
+# SENTRIX API: full image (training dependencies included), multi-stage build.
+# The deployed image is docker/Dockerfile.api.
 
 # ---------- Builder ----------
 FROM python:3.12-slim AS builder
@@ -20,17 +18,12 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
-# Copy application code — src/, api/, config/ are what the API needs to run.
-# frontend/, notebooks/, tests/ are intentionally excluded from this image
-# (see .dockerignore) since the API container doesn't need them.
+# Application code (frontend/, notebooks/, tests/ excluded via .dockerignore).
 COPY src/ ./src/
 COPY api/ ./api/
 COPY config/ ./config/
 
-# Model artifacts (MLflow registry, ChromaDB index, evaluation results,
-# fitted preprocessor) — several endpoints (/chat, /metrics, /health) read
-# these from disk directly, so they ship inside the image rather than
-# being fetched at runtime. ~59MB, well within reason for a model service.
+# Model artifacts read from disk by /chat, /metrics and /health.
 COPY artifacts/ ./artifacts/
 
 # Runtime directories the app writes to

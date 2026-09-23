@@ -1,34 +1,11 @@
 """
-frontend/dashboard.py
+Streamlit dashboard. Contains no business logic: every number comes from the
+FastAPI backend.
 
-Role
-----
-The window users actually see. Holds NO business logic — every number comes
-from an HTTP call to the FastAPI backend, so the dashboard could be swapped
-for React tomorrow without touching model, database, or RAG code.
-
-Performance note
-----------------
-Landing KPIs come from a single /summary call rather than pulling all 1,325
-seller rows into the browser and aggregating client-side. API responses are
-cached with st.cache_data so switching tabs doesn't re-hit the backend.
-
-Cold starts
------------
-The API sleeps when idle on a free host and takes up to a minute to wake.
-That is a normal state, not an error, and it is handled in one place: a
-single probe with backoff before any data is fetched. Two rules follow from
-having been burned by both:
-
-  * A 429 is answered by waiting *longer*, never by retrying immediately.
-    Answering a rate limit with more traffic is what produced the rate limit.
-  * A failed call is never cached. Caching a failure means the page stays
-    broken for the full TTL after the backend has already recovered.
-
-Operator instructions (uvicorn commands, missing-key warnings, the API's own
-URL) are shown only when running against a local backend. On a deployed
-instance the reader is a visitor, not an operator: they cannot act on any of
-it, and it makes a working service look broken.
+On a free host the API may be asleep, so the page probes /health once with a
+long timeout and backs off (never retries immediately, especially on a 429).
+Failed calls are never cached. Setup hints are shown only when running
+against a local backend.
 
 Run with:
     streamlit run frontend/dashboard.py
@@ -49,13 +26,10 @@ from src.config_loader import load_config
 
 cfg = load_config()
 
-# The deployed dashboard and the deployed API are separate services with
-# separate URLs, so the backend address cannot be baked into config.yaml.
-# Environment first, config.yaml as the local default.
+# API URL: environment variable first (deployed), config.yaml as local default.
 API_BASE = os.getenv("SENTRIX_API_BASE") or cfg["frontend"]["api_base_url"]
 
-# Whether the person looking at this page can actually do anything about the
-# backend. Drives every operator-facing message below.
+# True when running against a local backend; controls operator-only messages.
 IS_LOCAL = any(h in API_BASE for h in ("localhost", "127.0.0.1", "0.0.0.0"))
 
 st.set_page_config(page_title="SENTRIX", page_icon="📦", layout="wide",
@@ -115,19 +89,12 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 # API layer
 # ---------------------------------------------------------------------------
-# Statuses that mean "not ready yet" rather than "this request was wrong".
-# 429 is in here because a free host rate-limits a waking instance, and the
-# correct response to it is patience, not another request.
+# Statuses that mean "not ready yet" (429 = rate-limited while waking).
 NOT_READY_STATUSES = {429, 500, 502, 503, 504}
 
 
 class BackendUnavailable(Exception):
-    """The backend did not answer.
-
-    Deliberately carries no user-facing text: the call site decides what a
-    person should be told, which differs between an operator on localhost and
-    a visitor on the public URL.
-    """
+    """The backend did not answer. The caller decides what to tell the user."""
 
 
 def _call(method: str, path: str, **kwargs):
@@ -137,37 +104,23 @@ def _call(method: str, path: str, **kwargs):
     except requests.exceptions.RequestException as exc:
         raise BackendUnavailable("unreachable") from exc
 
-    # getattr rather than attribute access: the test suite substitutes minimal
-    # response doubles that implement raise_for_status() and json() and nothing
-    # else, and a status check is no reason to force every stand-in to grow a
-    # field. A real Response always carries one; anything without one falls
-    # through to raise_for_status() below, which is the check that matters.
+    # getattr: test doubles may not have status_code.
     status = getattr(r, "status_code", None)
     if status in NOT_READY_STATUSES:
         raise BackendUnavailable(f"status {status}")
     try:
         r.raise_for_status()
     except requests.exceptions.RequestException as exc:
-        # RequestException, not HTTPError: a response object is free to raise
-        # any transport error here — the test suite's offline double raises
-        # ConnectionError — and every one of them means the same thing to this
-        # caller, which is that there is no answer to work with.
+        # Any transport error means the same thing here: no answer.
         raise BackendUnavailable(f"status {status or 'error'}") from exc
     return r.json()
 
 
 def wait_for_backend(max_seconds: int = 90):
-    """Probe /health until it answers. Returns the payload or None.
-
-    One probe loop for the whole page, and the first attempt is deliberately
-    patient: the host holds the connection open while a sleeping instance
-    boots, so a single request with a long timeout usually rides the cold
-    start out and returns normally. Short timeouts turn that one waiting
-    request into a queue of abandoned ones, and the queue is what earns a 429.
-
-    Every endpoint used to run its own six-attempt loop, so a cold start meant
-    a dozen near-simultaneous requests. That is what turned a slow start into
-    a hard failure.
+    """
+    Probe /health until it answers; return the payload or None. The first
+    request waits long enough to ride out a cold start, and later retries
+    back off.
     """
     placeholder = st.empty()
     placeholder.info("Starting up — the service sleeps when idle and takes about a minute to wake.")
@@ -189,8 +142,7 @@ def wait_for_backend(max_seconds: int = 90):
             placeholder.empty()
             return health
         except BackendUnavailable:
-            # Grow the gap rather than hammering. A 429 means "you are asking
-            # too often", so the only correct reply to it is to ask less often.
+            # Back off: a 429 means ask less often.
             delay = min(delay * 1.8, 15.0)
 
     placeholder.empty()
@@ -199,8 +151,7 @@ def wait_for_backend(max_seconds: int = 90):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _api_get_cached(path: str, params: dict | None = None):
-    """Raises on failure, which is what keeps failures out of the cache:
-    st.cache_data stores return values, not exceptions."""
+    """Raises on failure, so failures are never cached."""
     return _call("get", path, params=params, timeout=45)
 
 
@@ -219,22 +170,14 @@ def api_post(path: str, body: dict):
 
 
 def operator_note(message: str, code: str | None = None) -> None:
-    """Show an instruction only to someone who can act on it.
-
-    On the deployed URL the reader is a visitor. Telling them to run uvicorn
-    is noise at best and makes a healthy service look broken at worst.
-    """
+    """Show a setup hint only when running locally."""
     if not IS_LOCAL:
         return
     st.warning(message + (f"\n\n```\n{code}\n```" if code else ""))
 
 
 def fmt(value, spec=".2f", fallback="—"):
-    """
-    Format a number that might be None/NaN. The dashboard must degrade to a
-    dash rather than crash the whole page when the backend has no data yet
-    (e.g. predictions table not populated).
-    """
+    """Format a number that may be None/NaN, showing a dash instead."""
     try:
         if value is None:
             return fallback
@@ -255,8 +198,7 @@ BAND_COLORS = {"low": "#22c55e", "medium": "#eab308", "high": "#f97316", "critic
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-# Rendered before any network call, so the first paint is the product rather
-# than a blank page with an error on it.
+# Drawn before any network call, so the page never starts blank.
 st.markdown(
     '<div class="hero"><h1>📦 SENTRIX</h1>'
     '<p>Delivery-Risk Intelligence — scores every order at purchase time for the '
@@ -272,8 +214,7 @@ st.markdown(
     '<code>is_synthetic=1</code> in the database — free APIs cannot backfill 2016–2018.</div>',
     unsafe_allow_html=True)
 
-# Placeholders so the KPI row occupies its final height immediately; the page
-# does not jump when the real numbers land.
+# Placeholders keep the layout stable while data loads.
 skeleton = st.empty()
 with skeleton.container():
     cols = st.columns(6)
@@ -345,8 +286,7 @@ with tab_overview:
             st.markdown("##### Average risk by state")
             by_state = summary.get("by_state") or []
             if not by_state:
-                # NOT st.stop() — that halts the entire script, blanking every
-                # other tab because one panel had no data.
+                # Not st.stop(), which would blank the other tabs too.
                 st.info("No per-state data available yet.")
             else:
                 bs = pd.DataFrame(by_state).head(12).sort_values("avg_risk")
@@ -521,7 +461,7 @@ with tab_chat:
         if res:
             st.markdown(res["answer"])
             if not res.get("llm_used"):
-                # Visitors get the plain fact; only an operator gets the cause.
+                # Visitors see the fact; only local operators see the cause.
                 st.caption("Showing the retrieved source passages directly for this answer.")
                 operator_note("No GROQ_API_KEY set — the LLM synthesis step was skipped.")
             with st.expander(f"Sources — {len(res['sources'])} retrieved chunks"):

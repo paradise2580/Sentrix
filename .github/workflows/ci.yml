@@ -11,11 +11,7 @@ env:
   PYTHON_VERSION: "3.12"
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Fast feedback on every push: lint + the unit tests that need no
-  # infrastructure. This is the job that has to stay under two minutes,
-  # because a check nobody waits for is a check nobody reads.
-  # ---------------------------------------------------------------------------
+  # Every push: lint + unit tests (no database needed).
   unit:
     name: Lint + unit tests
     runs-on: ubuntu-latest
@@ -31,11 +27,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Lint (flake8)
-        # No flags here on purpose. Passing --extend-ignore on the command
-        # line REPLACES the one in setup.cfg rather than adding to it, so the
-        # codes configured there come back and the build fails on style the
-        # project has deliberately opted out of. Let setup.cfg be the single
-        # source of truth, exactly as it is when run locally.
+        # No CLI flags: setup.cfg is the single source of lint settings.
         run: flake8 .
 
       - name: Unit tests
@@ -44,28 +36,13 @@ jobs:
         run: pytest tests/ -v --tb=short
 
       - name: Split-integrity tests
-        # Called out separately because these are the tests that guard the
-        # project's central correctness claim — no evaluation-period
-        # information reaches the model. If they go red, nothing downstream
-        # is worth reading.
+        # Run separately for visibility: these guard against data leakage.
         env:
           MYSQL_PASSWORD: unused-no-db-in-this-job
         run: pytest tests/test_split_integrity.py -v
 
-  # ---------------------------------------------------------------------------
-  # Full retrain + model gate. MANUAL ONLY (Actions tab -> Run workflow).
-  #
-  # It needs the raw Olist CSVs, which are DVC-tracked and not in the repo —
-  # there is no public DVC remote to pull them from, because the dataset is
-  # Kaggle-licensed and cannot be redistributed here. Running this on every
-  # push to main would therefore fail every time, and a permanently red badge
-  # trains everyone to ignore the badge.
-  #
-  # So the badge reflects what CI can honestly verify without the data: lint,
-  # unit tests, and the split-integrity suite. The retrain-and-gate job is
-  # real and runnable — point it at a DVC remote or a Kaggle secret and it
-  # runs end to end — it just isn't claimed as passing when it cannot run.
-  # ---------------------------------------------------------------------------
+  # Full retrain + model gate. MANUAL ONLY (Actions tab -> Run workflow),
+  # because the Kaggle-licensed Olist data can't be stored in the repo or CI.
   pipeline:
     name: End-to-end pipeline + model gate (manual)
     runs-on: ubuntu-latest
@@ -140,9 +117,7 @@ jobs:
         run: python -m src.evaluation.run_evaluation
 
       - name: Model performance gate
-        # Fails the build if the champion drops below the PR-AUC floor in
-        # config.yaml. Unit tests prove the code runs; this proves the model
-        # it produces is still worth shipping.
+        # Fails if the best model's PR-AUC is below monitoring.pr_auc_gate.
         run: python scripts/validate_model.py
 
       - name: Upload evaluation artifacts

@@ -1,12 +1,5 @@
 """
-api/schemas.py
-
-Role
-----
-Pydantic models defining every request and response shape the API
-accepts and returns. FastAPI uses these to validate incoming requests
-automatically — malformed input is rejected with a clear 422 error
-before it ever reaches model or database code.
+Pydantic request/response models. FastAPI rejects malformed input with a 422.
 """
 
 from pydantic import BaseModel, Field
@@ -61,15 +54,7 @@ class ChatResponse(BaseModel):
 
 
 class ModelMetric(BaseModel):
-    """
-    One row of the evaluation comparison table.
-
-    Mirrors the columns metrics.compare_models emits. Pydantic ignores
-    unknown keys by default, so a stale schema here does not raise — it
-    silently drops columns, which is how the capture/lift metrics were
-    being computed, written to CSV, and then thrown away before the
-    dashboard ever saw them.
-    """
+    """One row of the model comparison table (mirrors metrics.compare_models)."""
     model: str
     pr_auc: float
     pr_auc_lift: float | None = None     # PR-AUC / base rate — "x better than random"
@@ -98,8 +83,7 @@ class StateRisk(BaseModel):
 
 
 class SummaryResponse(BaseModel):
-    """Portfolio-level KPIs — lets the dashboard render its landing view
-    with one small call instead of pulling every seller row."""
+    """Dashboard KPIs in one call."""
     total_sellers: int
     band_counts: dict[str, int]
     avg_risk: float

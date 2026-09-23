@@ -1,50 +1,11 @@
 """
-src/evaluation/generate_predictions.py
+Scores recent orders with the winning model, calibrates the scores, rolls
+them up to one risk score per seller, explains each seller with averaged
+SHAP values, and writes the result to the predictions table.
 
-Role
-----
-Closes the loop. Scores every recent ORDER with the winning model,
-calibrates those scores, rolls them up to a per-seller risk, explains each
-seller with aggregated SHAP, and writes {risk_score, risk_band,
-top_features} into the predictions table the API and dashboard read.
-
-Why the rollup is a MEAN and not a count
-----------------------------------------
-This is the design decision the whole project turns on, and it is the fix
-for the failure that killed two earlier versions.
-
-SENTRIX originally predicted a seller-level target directly, and the
-ablation showed the model was a volume detector: a forest given only the
-three order_count_* columns scored ROC-AUC 0.7317 against the full
-47-feature model's 0.6494. The label — "any late order in the next 30
-days" — was close to a deterministic function of how many orders a seller
-shipped.
-
-Predicting orders and summing the risk would reintroduce exactly that. A
-seller shipping 200 parcels would top the queue permanently, not because
-their parcels are risky but because they have more of them.
-
-So a seller's risk is the MEAN predicted risk of their recent orders. That
-is a rate. It cannot be inflated by shipping more, and it answers the
-question an ops team actually asks: "is this seller's typical parcel more
-likely than usual to miss its date?" The volume confound is closed by the
-shape of the statistic rather than argued away in a README.
-
-Sellers with fewer than `seller_rollup_min_orders` recent orders are not
-ranked at all — a mean over two parcels is noise, and putting it in a
-worklist wastes a reviewer's time.
-
-Scores are written CALIBRATED
------------------------------
-The stored number is what a human sees and what any cost calculation
-multiplies. A raw score from a model trained with class_weight="balanced"
-is systematically inflated — fine for ranking, wrong to display as "38%
-chance of being late". The isotonic calibrator fitted on the held-out
-calibration block is applied before anything is stored.
-
-Bands are assigned by RANK on the raw score — see
-metrics.assign_risk_bands_by_quantile, and the note below on why isotonic
-output cannot be banded directly.
+A seller's risk is the MEAN risk of their recent orders, not the sum, so
+shipping more orders does not make a seller look riskier. Sellers with too
+few recent orders are not ranked.
 
 Run with:
     python -m src.evaluation.generate_predictions
@@ -71,21 +32,15 @@ from src.exception import SentrixException
 
 logger = get_logger(__name__)
 
-# Model whose SHAP values explain the stored predictions when the winning
-# model cannot be explained directly (a StackingClassifier has no single
-# feature space).
+# SHAP stand-in for models that can't be explained directly.
 EXPLAINER_PROXY = "xgboost"
 UNEXPLAINABLE = {"ensemble", "lstm"}
 
 
 def _recent_orders(df: pd.DataFrame, window_days: int) -> pd.DataFrame:
     """
-    The trailing window of orders, measured from the newest order in the
-    table rather than from today.
-
-    The Olist snapshot ends in 2018. Anchoring on the wall clock would
-    return an empty frame and an empty dashboard; anchoring on the data
-    keeps the demo honest about what period it is showing.
+    Orders from the last `window_days`, counted back from the newest order
+    in the data (the dataset ends in 2018, so not from today).
     """
     cutoff = df["as_of_date"].max() - pd.Timedelta(days=int(window_days))
     recent = df[df["as_of_date"] >= cutoff]
@@ -98,8 +53,7 @@ def _load_winner(cfg: dict, eval_dir):
     summary = joblib.load(eval_dir / "best_model_summary.joblib")
     name = summary["best_model"]
     if name == "lstm":
-        # The sequence model is not part of the order-level default and has
-        # no row-wise feature space to score a single parcel with.
+        # The LSTM can't score single orders, so fall back to the proxy.
         logger.warning("Evaluation winner was the sequence model; scoring with "
                        f"{EXPLAINER_PROXY} instead, which scores rows directly")
         name = EXPLAINER_PROXY
@@ -127,10 +81,8 @@ def generate_and_store_predictions() -> pd.DataFrame:
         X = transform(recent, bundle)
         raw_order = model.predict_proba(X)[:, 1]
 
-        # --- calibrate at ORDER level --------------------------------------
-        # The calibrator was fitted on held-out orders, so it belongs here,
-        # before aggregation. Calibrating a mean of raw scores instead would
-        # apply an order-level mapping to a quantity it was never fitted on.
+        # Calibrate per order, before averaging: the calibrator was fitted
+        # on orders.
         calibrator_path = eval_dir / "calibrator.joblib"
         if calibrator_path.exists():
             cal_order = apply_calibrator(joblib.load(calibrator_path), raw_order)
@@ -141,7 +93,7 @@ def generate_and_store_predictions() -> pd.DataFrame:
             logger.warning("No calibrator found — storing RAW scores. Run "
                            "src.evaluation.run_evaluation first.")
 
-        # --- SHAP at order level, averaged per seller ----------------------
+        # SHAP per order, averaged per seller below.
         explain_name = EXPLAINER_PROXY if best_model_name in UNEXPLAINABLE else best_model_name
         if explain_name != best_model_name:
             logger.info(f"{best_model_name} is not directly explainable; "
@@ -162,7 +114,7 @@ def generate_and_store_predictions() -> pd.DataFrame:
                 f"explained model disagree about the feature space."
             )
 
-        # --- roll up to sellers --------------------------------------------
+        # Roll up to sellers.
         scored = pd.DataFrame({
             "seller_id": recent["seller_id"].astype(str).values,
             "raw": raw_order,
@@ -184,22 +136,14 @@ def generate_and_store_predictions() -> pd.DataFrame:
                 f"order_model.seller_rollup_window or lower seller_rollup_min_orders."
             )
 
-        # Mean signed SHAP per seller: what drives THIS seller's typical parcel.
+        # Mean SHAP per seller: what drives this seller's typical order.
         shap_df = pd.DataFrame(shap_matrix, columns=feature_names)
         shap_df["seller_id"] = scored["seller_id"].values
         seller_shap = shap_df.groupby("seller_id").mean().loc[seller.index]
 
-        # --- band on the RAW score, display the CALIBRATED one --------------
-        #
-        # Isotonic regression is a step function: every raw score inside a bin
-        # maps to one output value, so calibrated scores collapse onto a few
-        # dozen distinct numbers. Quantile cuts then land on large ties and
-        # push everything at the boundary into the higher band — the top band
-        # came out 5.5% instead of 5%, and "medium" swallowed 41% of the
-        # population instead of 30%.
-        #
-        # Calibration is monotone, so banding on the raw score changes no
-        # ordering. It only restores the resolution calibration flattened.
+        # Band on the raw score, display the calibrated one. Isotonic output
+        # has many ties, which skews quantile cuts; calibration keeps the
+        # order, so banding on raw scores gives the same ranking.
         bands = assign_risk_bands_by_quantile(
             seller["raw"].values, cfg["model"]["risk_band_quantiles"])
 

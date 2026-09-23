@@ -1,35 +1,13 @@
 """
-src/models/trainer.py
+Trains every model from the feature table, so the split, preprocessing and
+imbalance handling are identical for all of them.
 
-Role
-----
-The single place that takes the feature table all the way through to the
-saved model artifacts. Every model routes through here so the split,
-preprocessing, and imbalance handling are applied identically and once.
-
-Split strategy — purged, embargoed, three-way
----------------------------------------------
+Split (by purchase date):
     [ TRAIN ] <embargo> [ CALIB ] <embargo> [ TEST ]
-                 30d                 30d
 
-A plain chronological cut is NOT sufficient here, and this is the single
-most important correctness decision in the project.
-
-Rows are dated by PURCHASE time, but the label resolves at DELIVERY —
-typically one to three weeks later. So a training order purchased just
-before the cut has an outcome that lands inside the test window, and the
-seller-history features of early test orders are computed from outcomes
-that training rows already revealed. Train and test share information, the
-test score is optimistic, and the number reported is not the number
-production would give. The fix is an embargo: drop the final
-`embargo_days` of each block so no retained training label resolves inside
-the block that follows it. This is the standard purge-and-embargo
-treatment for overlapping-label time series.
-
-The middle CALIB block exists because probability calibration has to be
-fitted on data the model has not trained on, and evaluated on data neither
-the model nor the calibrator has seen. Reusing the test set to fit the
-calibrator would quietly turn the test score into a training score.
+Labels resolve at delivery, weeks after purchase, so a 30-day embargo is
+dropped before each block to keep training labels out of later blocks.
+CALIB is only used to fit probability calibration.
 """
 
 from pathlib import Path
@@ -61,11 +39,8 @@ def purged_temporal_split(
     embargo_days: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Split by as_of_date into train / calibration / test, with an embargo gap
-    of `embargo_days` before each downstream block.
-
-    Returns (train_df, calib_df, test_df). Any row falling inside an embargo
-    gap is dropped from every block — that is the whole point.
+    Split by as_of_date into (train_df, calib_df, test_df), dropping
+    `embargo_days` before each later block.
     """
     try:
         df = df.sort_values("as_of_date").reset_index(drop=True)
@@ -102,23 +77,13 @@ def purged_temporal_split(
 
 def chronological_split(df: pd.DataFrame, test_size: float,
                         embargo_days: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Two-way purged split. Kept because the tests and a couple of scripts
-    call it directly; internally it is the three-way split with no
-    calibration block.
-    """
+    """Two-way version of purged_temporal_split (no calibration block)."""
     train_df, _, test_df = purged_temporal_split(df, test_size, 0.0, embargo_days)
     return train_df, test_df
 
 
 def apply_smote(X: np.ndarray, y: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Synthetic oversampling of the minority class on the TRAINING set only.
-
-    Never on calibration or test: SMOTE invents rows, and a metric measured
-    against invented rows measures nothing. It also destroys calibration,
-    which is why the calibrated model is fitted on un-resampled data.
-    """
+    """Oversample the minority class. Training data only, never calib/test."""
     try:
         smote = SMOTE(random_state=seed)
         X_res, y_res = smote.fit_resample(X, y)
@@ -142,12 +107,9 @@ def save_model(model, name: str) -> Path:
 
 def prepare_data(feature_table_path: str | None = None) -> dict:
     """
-    Shared setup used by every stage: load features, purged three-way split,
-    fit the preprocessor ON TRAIN ONLY, transform every block, and build the
-    SMOTE-resampled training set.
-
-    Deterministic given the feature table, so training and evaluation
-    reconstruct byte-identical splits without having to persist them.
+    Load features, split, fit the preprocessor on train only, transform every
+    block, and build the SMOTE training set. Deterministic, so evaluation can
+    rebuild the same split.
     """
     cfg = load_config()
     seed = cfg["project"]["random_state"]
@@ -167,7 +129,7 @@ def prepare_data(feature_table_path: str | None = None) -> dict:
         embargo_days=pre.get("embargo_days", pre.get("label_horizon_days", 30)),
     )
 
-    # Fitted on train only — see the module docstring in preprocessing/pipeline.py
+    # Fitted on train only.
     fit_and_save_preprocessor(train_df)
     bundle = load_preprocessor()
 
@@ -177,8 +139,7 @@ def prepare_data(feature_table_path: str | None = None) -> dict:
 
     X_train_smote, y_train_smote = apply_smote(X_train, y_train, seed)
 
-    # Scaled, seller-aware frames for the sequence model. Sorted by
-    # (seller_id, as_of_date) so sequence construction is deterministic.
+    # Frames for the LSTM, sorted so sequences are deterministic.
     seq_train = transform_to_frame(train_df, bundle).sort_values(["seller_id", "as_of_date"])
     seq_test = transform_to_frame(test_df, bundle).sort_values(["seller_id", "as_of_date"])
 
@@ -195,7 +156,7 @@ def prepare_data(feature_table_path: str | None = None) -> dict:
 
 
 def train_baseline_stage(data: dict) -> dict:
-    """Stage 1: Logistic Regression + Random Forest. Fast (~30-40s)."""
+    """Stage 1: Logistic Regression + Random Forest."""
     results = {}
     logger.info("=== Training Logistic Regression ===")
     logreg = build_logistic_regression()
@@ -232,25 +193,14 @@ def train_boosting_stage(data: dict) -> dict:
 
 
 def train_ensemble_stage(data: dict) -> dict:
-    """
-    Stage 3: Stacking ensemble.
-
-    The meta-learner is trained on out-of-fold base predictions, so the CV
-    scheme inside the stacker matters as much as the outer split. With a
-    k-fold scheme the meta-learner sees folds from the FUTURE of the folds
-    it is scoring — the same leakage the outer split just eliminated,
-    reintroduced one level down. build_ensemble uses TimeSeriesSplit for
-    exactly this reason.
-    """
+    """Stage 3: temporal stacking ensemble (see models/ensemble.py)."""
     cfg = load_config()
     models_dir = get_project_root() / cfg["paths"]["models"]
     best_params_path = models_dir / "xgboost_best_params.joblib"
     best_params = joblib.load(best_params_path) if best_params_path.exists() else None
 
     logger.info("=== Training Stacking Ensemble ===")
-    # The stacker refits every base model once per fold, so a 300-tree RF
-    # inside it costs n_folds x the standalone cost. A lighter RF is used
-    # HERE ONLY — the standalone random_forest artifact keeps its full 300.
+    # Lighter RF inside the stack only, since it is refit once per fold.
     light_rf = build_random_forest()
     light_rf.set_params(n_estimators=60, max_depth=8)
 
@@ -265,12 +215,7 @@ def train_ensemble_stage(data: dict) -> dict:
 
 
 def train_lstm_stage(data: dict) -> dict:
-    """
-    Stage 4: PyTorch LSTM over per-seller sequences.
-
-    Consumes the SCALED frame (data["seq_train"]) so it sees exactly the
-    same feature representation as every other model.
-    """
+    """Stage 4: PyTorch LSTM over per-seller sequences (optional)."""
     cfg = load_config()
     feature_names = data["feature_names"]
 
@@ -286,8 +231,7 @@ def train_lstm_stage(data: dict) -> dict:
     return {"lstm": {"model": lstm_model, "meta": lstm_meta}}
 
 
-# Stage registry — used by both the CLI and any orchestrator (e.g. Airflow)
-# that wants to run stages independently instead of one long blocking call.
+# Stages can be run independently from the CLI.
 _STAGES = {
     "baseline": train_baseline_stage,
     "boosting": train_boosting_stage,
@@ -295,24 +239,16 @@ _STAGES = {
     "lstm": train_lstm_stage,
 }
 
-# The sequence model is NOT in the default set. SENTRIX predicts orders, and
-# an order is not a timestep in a seller's history — it is an independent
-# shipment whose risk is set by its route, weight and promised window. A
-# per-seller sliding window over ~110k orders would also allocate
-# 110k x seq_len x n_features floats to model a sequence that does not carry
-# the signal. Run it explicitly with --stages lstm if you want it evaluated.
+# LSTM is off by default: orders are independent shipments, not a sequence.
+# Run it with --stages lstm.
 _DEFAULT_STAGES = ["baseline", "boosting", "ensemble"]
 
 
 def train_all_models(feature_table_path: str | None = None,
                      stages: list[str] | None = None) -> dict:
     """
-    Run one or more training stages end to end. Defaults to all four stages
-    (six models total: 2 baseline + 2 boosting + 1 ensemble + 1 LSTM).
-
-    Each stage is independently callable and saves its own artifacts, so a
-    long training job can be resumed stage-by-stage rather than re-run from
-    scratch.
+    Run the given training stages (default: baseline, boosting, ensemble).
+    Each stage saves its own artifacts.
     """
     try:
         stages = stages or list(_DEFAULT_STAGES)

@@ -1,14 +1,6 @@
 """
-src/monitoring/drift.py
-
-Role
-----
-Models silently decay when the real world shifts (a new disruption
-pattern, a supplier base that's grown, a feature distribution that's
-moved). This module compares a "reference" slice of the feature table
-(what the model was trained on) against a "current" slice (recent data)
-and flags data drift — the same check a production ML system runs on a
-schedule (via the Airflow DAG) to know when retraining is needed.
+Data drift check with Evidently: compares an older "reference" slice of the
+feature table against a recent "current" slice. Run by the Airflow DAG.
 """
 
 from pathlib import Path
@@ -26,11 +18,7 @@ logger = get_logger(__name__)
 
 def split_reference_and_current(df: pd.DataFrame, date_col: str = "as_of_date",
                                  split_fraction: float = 0.5) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Splits the feature table chronologically: the earlier slice is
-    'reference' (what a model would have been trained on), the later
-    slice is 'current' (freshly arrived data to check for drift against).
-    """
+    """Split the feature table by date into (reference, current)."""
     df = df.sort_values(date_col)
     cutoff_idx = int(len(df) * split_fraction)
     cutoff_date = df.iloc[cutoff_idx][date_col]
@@ -43,9 +31,8 @@ def split_reference_and_current(df: pd.DataFrame, date_col: str = "as_of_date",
 def run_drift_report(reference: pd.DataFrame, current: pd.DataFrame,
                       feature_cols: list[str], output_path: str | None = None) -> dict:
     """
-    Runs Evidently's DataDriftPreset comparing reference vs current on the
-    given numeric feature columns, saves an HTML report, and returns a
-    summary dict (which columns drifted, overall drift share).
+    Run Evidently's DataDriftPreset on the given columns, save an HTML
+    report, and return a summary dict.
     """
     try:
         cfg = load_config()
@@ -74,11 +61,7 @@ def run_drift_report(reference: pd.DataFrame, current: pd.DataFrame,
 
 
 def check_drift_from_feature_table(feature_table_path: str | None = None) -> dict:
-    """
-    End-to-end: load the saved feature table, split it chronologically
-    into reference/current, run the drift report. This is the function
-    the Airflow DAG calls on its schedule.
-    """
+    """Load the feature table, split it, and run the drift report."""
     try:
         cfg = load_config()
         path = feature_table_path or (get_project_root() / cfg["paths"]["data_processed"] / "features.csv")
@@ -101,12 +84,7 @@ def _get_numeric_feature_cols(df: pd.DataFrame) -> tuple[list[str], list[str]]:
 
 
 def summarize_drift(raw_result: dict) -> dict:
-    """
-    Extracts a clean, human-readable summary from Evidently's raw snapshot
-    dict: how many features drifted, and which ones, ranked by severity.
-    This is what an Airflow task would check to decide whether
-    to trigger a retraining alert.
-    """
+    """Summarise Evidently's output: how many features drifted, and which."""
     metrics = raw_result.get("metrics", [])
 
     overall = next(

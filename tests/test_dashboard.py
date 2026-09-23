@@ -1,15 +1,7 @@
 """
-tests/test_dashboard.py
-
-Regression tests for the dashboard's failure modes.
-
-A Streamlit page that raises during render shows the user a blank screen —
-so the dashboard must degrade gracefully when the backend is down or has no
-data yet, rather than crashing. This previously failed with:
-
-    TypeError: unsupported format string passed to NoneType.__format__
-
-because a None avg_risk was formatted with :.2f.
+The dashboard must render (with warnings, not exceptions) when the backend
+is down or returns empty values. Regression test for a None avg_risk being
+formatted with :.2f.
 """
 
 import sys
@@ -58,10 +50,7 @@ def test_renders_when_api_is_completely_down(monkeypatch):
 
 
 def test_renders_when_summary_fields_are_none(monkeypatch):
-    """
-    The original bug: /summary returned avg_risk=None and the f-string
-    ':.2f' blew up, blanking the whole page.
-    """
+    """/summary returning avg_risk=None must not crash the page."""
     _stub_streamlit()
 
     empty_summary = {

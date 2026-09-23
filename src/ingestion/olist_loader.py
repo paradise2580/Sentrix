@@ -1,18 +1,7 @@
 """
-src/ingestion/olist_loader.py
+Loads the Olist Brazilian e-commerce CSVs into MySQL and computes the label:
 
-Role
-----
-Loads the REAL Olist Brazilian E-Commerce dataset (9 CSVs) into MySQL and
-computes the project's ground-truth label.
-
-The label is real, not invented
---------------------------------
     is_late = order_delivered_customer_date > order_estimated_delivery_date
-
-Both columns come straight from Olist. "Was this delivery late?" is therefore
-a fact recorded by a real marketplace, not a heuristic we made up — which is
-what makes the modelling downstream defensible.
 
 Run with:
     python -m src.ingestion.olist_loader
@@ -29,9 +18,7 @@ import sys
 
 logger = get_logger(__name__)
 
-# Files required for seller-risk modelling. The customers file is NOT
-# required — SENTRIX models seller (supplier) delivery risk, and customer
-# demographics play no part in that; it is loaded only when present.
+# Required files. The customers file is optional and loaded when present.
 _FILES = {
     "sellers": "olist_sellers_dataset.csv",
     "products": "olist_products_dataset.csv",
@@ -67,7 +54,7 @@ def load_sellers() -> pd.DataFrame:
 
 
 def load_customers() -> pd.DataFrame | None:
-    """Optional — returns None when the customers file isn't present."""
+    """Returns None when the customers file isn't present."""
     path = _olist_dir() / _OPTIONAL_FILES["customers"]
     if not path.exists():
         logger.info("customers file not present — skipping (not required for seller-risk modelling)")
@@ -78,7 +65,7 @@ def load_customers() -> pd.DataFrame | None:
 
 
 def load_products() -> pd.DataFrame:
-    """Products joined with the English category translation for readability."""
+    """Products with English category names."""
     products = pd.read_csv(_olist_dir() / _FILES["products"])
     translation = pd.read_csv(_olist_dir() / _FILES["translation"], encoding="utf-8-sig")
 
@@ -94,10 +81,8 @@ def load_products() -> pd.DataFrame:
 
 def load_orders() -> pd.DataFrame:
     """
-    Load orders and compute the REAL late-delivery label.
-
-    Only delivered orders can be labelled — an order still in transit has no
-    known outcome yet, so is_late stays NULL rather than being guessed at.
+    Load orders and compute is_late. Undelivered orders keep is_late NULL,
+    since their outcome is unknown.
     """
     date_cols = [
         "order_purchase_timestamp", "order_approved_at",
@@ -133,7 +118,7 @@ def load_order_items() -> pd.DataFrame:
 
 
 def load_reviews() -> pd.DataFrame:
-    """Real customer reviews — the genuine source for sentiment features."""
+    """Customer reviews."""
     df = pd.read_csv(_olist_dir() / _FILES["reviews"], parse_dates=["review_creation_date"])
     df = df.drop_duplicates(subset=["review_id", "order_id"])
     return df[["review_id", "order_id", "review_score",
@@ -141,7 +126,7 @@ def load_reviews() -> pd.DataFrame:
 
 
 def load_all_to_mysql(reset: bool = True) -> dict:
-    """Load every real Olist table into MySQL. Returns row counts per table."""
+    """Load every Olist table into MySQL. Returns row counts per table."""
     try:
         verify_files_present()
         loader = DataLoader()

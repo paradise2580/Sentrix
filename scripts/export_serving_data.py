@@ -1,24 +1,11 @@
 """
-scripts/export_serving_data.py
+Prepares the files the deployed app serves:
 
-Snapshots everything the deployed app needs into a single SQLite file, and
-compacts the vector index so it can be committed.
-
-Why a snapshot rather than a hosted database
---------------------------------------------
-The API does no model inference at request time. `/sellers`, `/explain`,
-`/summary` and `/metrics` all read rows that generate_predictions.py
-computed offline. That means the serving tier needs a few thousand
-read-only rows, not a database server.
-
-Free managed Postgres expires after 30 days. A demo link that dies a month
-after you put it on your CV is worse than no link. A SQLite file in the
-repo has nothing to expire and nothing to leak.
-
-What gets written
------------------
-    data/serving/sentrix.db    predictions + sellers, read-only
+    data/serving/sentrix.db    predictions + scored sellers (SQLite)
     artifacts/chroma/          the vector index, rebuilt clean
+
+The API does no inference at request time, so a read-only SQLite file is
+enough and nothing expires on a free host.
 
 Run with:
     python scripts/export_serving_data.py
@@ -46,7 +33,7 @@ def export_sqlite() -> Path:
     out = get_project_root() / OUT_REL
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
-        out.unlink()          # a fresh file, never an append onto a stale one
+        out.unlink()          # always start from a fresh file
 
     loader = DataLoader()
     engine = create_engine(f"sqlite:///{out}")
@@ -55,8 +42,7 @@ def export_sqlite() -> Path:
     for table in TABLES:
         df = loader.read_table(table)
 
-        # Only the sellers actually scored need to travel. Carrying all 3,095
-        # when 1,325 are scored just pads the file with rows no endpoint reads.
+        # Only export sellers that were scored.
         if table == "sellers" and "predictions" in TABLES:
             scored = set(loader.read_table("predictions")["seller_id"])
             df = df[df["seller_id"].isin(scored)]
@@ -72,13 +58,8 @@ def export_sqlite() -> Path:
 
 def compact_chroma() -> None:
     """
-    Rebuild the vector index from scratch so only one collection is on disk.
-
-    chromadb's delete_collection removes the collection record but leaves
-    its segment directory behind. Re-indexing therefore grows the directory
-    by ~6 MB every single time — five rebuilds had taken artifacts/chroma to
-    46 MB, most of it orphaned. Deleting the directory before rebuilding is
-    the only way to actually reclaim it.
+    Delete and rebuild the vector index. delete_collection leaves old files
+    on disk, so deleting the directory is the only way to reclaim space.
     """
     persist = get_project_root() / load_config()["paths"]["chroma_db"]
     if persist.exists():

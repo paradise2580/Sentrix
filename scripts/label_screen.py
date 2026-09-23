@@ -1,46 +1,13 @@
 """
-scripts/label_screen.py
+Experiment (seller-level model, now retired): scores several candidate
+seller-level labels on the same purged split.
 
-Picks the target definition from evidence instead of from intuition.
+For each label it reports:
+    volume_roc   ROC-AUC using only order-count columns (want ~0.50)
+    novol_roc    ROC-AUC using everything except volume (the real signal)
+    drift        |train base rate - test base rate| (want small)
 
-Why this script exists
-----------------------
-Two label definitions have now been shipped and measured, and both failed
-in the same way — by encoding order VOLUME rather than delivery RISK:
-
-  v1  "any late order in the next 30 days"
-      Ranking sellers by order_count_30d alone, with no model, scored
-      PR-AUC 0.4455 against the full model's 0.3911. The label was a
-      busy-seller detector: P(>=1 late | n orders) = 1 - (1-p)^n.
-
-  v2  "forward late RATE >= 15%, among sellers with >= 5 forward orders"
-      Worse. Every tabular model landed BELOW 0.5 ROC-AUC on the test
-      block (logistic regression: 0.4054). The mechanism is the mirror
-      image of v1: at n=5 a 15% threshold still means "at least one late
-      order", while at n=100 a seller at the 8% marketplace rate has
-      P(rate >= 15%) ~ 0.4%. So the positive rate now FALLS with volume.
-      Olist volume grows through 2018, so the training block (17.3%
-      positive) and the test block (12.2%) are different regimes, the
-      learned relationship inverts, and AUC lands under a coin flip.
-
-The lesson is not "try a third threshold". It is that a label whose base
-rate is a function of the denominator will always leak volume, in one
-direction or the other. So this script builds the panel ONCE and scores
-several candidate labels against the same purged split, reporting for each
-the only three numbers that decide the question:
-
-    volume_roc   ROC-AUC of a model given ONLY the order_count_* columns.
-                 A sound label sits at ~0.50 here. Anything else means
-                 order count alone carries the answer.
-    novol_roc    ROC-AUC using every feature EXCEPT volume. This is the
-                 real signal — whether delivery history, reviews and peer
-                 context predict future reliability.
-    drift        |train base rate - test base rate|. A label whose class
-                 balance moves between blocks cannot be learned in one and
-                 applied in the other.
-
-A candidate is only worth a full retrain if volume_roc is near 0.50,
-novol_roc is meaningfully above it, and drift is small.
+Background and results: docs/DESIGN.md.
 
 Run with:
     python scripts/label_screen.py
@@ -91,7 +58,7 @@ def build_panel() -> pd.DataFrame:
 
 
 def attach_forward(panel: pd.DataFrame) -> pd.DataFrame:
-    """Forward-window late count and order count — the raw material of every candidate."""
+    """Forward-window late count and order count."""
     def forward_sum(column: str) -> pd.Series:
         rolled = (panel.groupby("seller_id")[column]
                   .rolling(HORIZON, min_periods=1).sum()
@@ -122,13 +89,8 @@ def cand_rate(p: pd.DataFrame, thresh: float, min_n: int) -> pd.Series:
 
 def cand_shrunk(p: pd.DataFrame, thresh: float, strength: float, min_n: int) -> pd.Series:
     """
-    Empirical-Bayes shrunk rate: (late + a) / (orders + a + b), with the
-    prior centred on the marketplace-wide late rate.
-
-    A seller with 1 late out of 3 is not evidence of a 33% late rate; a
-    seller with 40 late out of 120 is. Shrinkage encodes exactly that,
-    pulling thin denominators toward the marketplace mean instead of
-    letting them swing the label.
+    Empirical-Bayes shrunk rate (late + a) / (orders + a + b), which pulls
+    sellers with few orders toward the marketplace rate.
     """
     p0 = float(p["late_n"].sum() / p["orders_n"].sum())
     a, b = p0 * strength, (1 - p0) * strength
@@ -141,12 +103,8 @@ def cand_shrunk(p: pd.DataFrame, thresh: float, strength: float, min_n: int) -> 
 
 def cand_zscore(p: pd.DataFrame, z: float, min_n: int) -> pd.Series:
     """
-    Standardised excess over the marketplace rate:
+    Excess lateness over the marketplace rate in standard errors:
         (late - n*p0) / sqrt(n*p0*(1-p0))
-
-    Asks "is this seller worse than the marketplace by more than sampling
-    noise explains", which is the question an ops lead actually means. The
-    denominator makes the bar scale with n instead of against it.
     """
     p0 = float(p["late_n"].sum() / p["orders_n"].sum())
     n = p["forward_orders"]
@@ -159,19 +117,8 @@ def cand_zscore(p: pd.DataFrame, z: float, min_n: int) -> pd.Series:
 
 def cand_stratified(p: pd.DataFrame, worst_frac: float, min_n: int) -> pd.Series:
     """
-    Relative label: the worst `worst_frac` of forward late rate WITHIN a
-    (calendar month x forward-volume decile) cell.
-
-    Volume is held fixed inside every cell, so order count carries no
-    information about the label by construction — the ablation should come
-    back at 0.50 rather than being argued down. Conditioning on month
-    additionally pins the base rate to worst_frac in every period, which is
-    what kills the train/test regime shift that sank v2.
-
-    The target it defines is "unusually unreliable FOR A SELLER OF THIS
-    SIZE", which is also the useful triage question: a large seller is
-    always worth watching on absolute counts, and that is precisely why
-    absolute counts make a poor alert queue.
+    Worst `worst_frac` of forward late rate within each (month x forward-volume
+    decile) cell, so volume carries no information about the label.
     """
     d = p[["forward_rate", "forward_orders", "as_of_date"]].copy()
     d["month"] = d["as_of_date"].dt.to_period("M")
@@ -205,7 +152,7 @@ CANDIDATES = {
 
 # -------------------------------------------------------------- screening
 def score_candidate(panel: pd.DataFrame, y: pd.Series, cfg: dict) -> dict | None:
-    """Purged split, three quick forests, the three numbers that decide it."""
+    """Purged split, three quick forests, and the three screening numbers."""
     df = panel.copy()
     df["y"] = y
     df = df.dropna(subset=["y"])

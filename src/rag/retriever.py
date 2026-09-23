@@ -1,11 +1,5 @@
 """
-src/rag/retriever.py
-
-Role
-----
-Given a user question, embed it into the same vector space the index was
-built in, and return the top-k most relevant document chunks from
-ChromaDB. This is the "R" (retrieval) in RAG.
+Retrieval for RAG: embed the question and return the top-k chunks from ChromaDB.
 """
 
 from src.config_loader import load_config
@@ -19,12 +13,7 @@ logger = get_logger(__name__)
 
 
 def retrieve(query: str, top_k: int | None = None, filter_metadata: dict | None = None) -> list[dict]:
-    """
-    Semantic search over the indexed knowledge base.
-
-    Returns a list of {text, metadata, distance} dicts, ranked by
-    relevance (lowest distance first).
-    """
+    """Top-k chunks as {text, metadata, distance}, closest first."""
     try:
         cfg = load_config()["rag"]
         top_k = top_k or cfg["top_k"]

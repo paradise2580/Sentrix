@@ -1,55 +1,16 @@
 """
-scripts/label_screen2.py
+Experiment (seller-level model, now retired): is a seller's future late
+rate predictable at all?
 
-Asks the question that has to be answered before any more modelling:
-is the target PREDICTABLE, or is it noise?
+  1. Split-half reliability: does a seller's late rate in days 1-15 of a
+     window match days 16-30? This is the ceiling for any model.
+  2. Persistence AUC: does the trailing 30-day late rate rank the forward
+     label?
+  3. Both, plus a forest, for min_forward_orders in {5, 10, 20, 30, 50}.
 
-Where this comes from
----------------------
-label_screen.py established two things. First, the shipped v1 label was a
-volume detector — a forest given only the three order_count_* columns
-scored ROC-AUC 0.7317 against the full 47-feature model's 0.6494. Second,
-a label that neutralises volume by construction (worst 20% of forward late
-rate within month x volume-decile cells) does neutralise it — volume_roc
-0.4946, drift 1.59 points — and the model then scores 0.5056. A coin flip.
-
-Two explanations fit that equally well and they demand opposite responses:
-
-  A. There is no seller-level signal. Lateness in this marketplace is
-     driven by carrier, distance and calendar, not by stable seller
-     quality. The project should then be rebuilt at ORDER level.
-
-  B. There is signal, but the label cannot see it. A forward late rate
-     measured over 5 orders has a standard error of
-     sqrt(0.08*0.92/5) ~ 0.121, which is likely larger than the true
-     spread between sellers. Ranking on that mostly ranks luck. The fix is
-     a bigger denominator, not a different feature.
-
-This script separates them with three measurements:
-
-1. SPLIT-HALF RELIABILITY — the ceiling.
-   Take the forward window, cut it in half, and ask how well a seller's
-   late rate in the first half predicts their rate in the second half.
-   Same seller, same period, no modelling, no feature engineering. If
-   THAT is near zero, the quantity has no stable seller-level component
-   and no model can ever predict it. This is the number that decides
-   between A and B, and nothing else in this project can substitute for it.
-
-2. PERSISTENCE AUC — one feature, no model.
-   How well does the seller's trailing 30-day late rate rank the forward
-   label? A model that cannot beat this single column is not earning its
-   complexity.
-
-3. THE min_n SWEEP.
-   Both of the above, plus a full forest, at min_forward_orders in
-   {5, 10, 20, 30, 50}. If explanation B is right, every number rises
-   monotonically with the denominator and the story is "the signal was
-   always there, it needed enough orders to become measurable". If they
-   stay flat at 0.5, explanation A is right and the seller-day framing is
-   finished.
-
-It also dumps the raw table schemas, because the order-level rebuild is
-where this goes if the answer is A.
+The answer (the effect exists within a month but doesn't carry into the
+next) is why the project switched to order-level prediction. See
+docs/DESIGN.md.
 
 Run with:
     python scripts/label_screen2.py
@@ -81,14 +42,7 @@ MIN_N_SWEEP = [5, 10, 20, 30, 50]
 
 # --------------------------------------------------------------- ceiling
 def split_half_reliability(panel: pd.DataFrame, min_half: int) -> dict:
-    """
-    Correlate a seller's late rate in (t, t+15] against (t+15, t+30].
-
-    This is the honest upper bound on any model of the forward rate. The
-    two halves are the same seller in the same month under the same
-    carriers — if they do not agree with each other, nothing measured
-    BEFORE t is going to agree with either.
-    """
+    """Correlation of a seller's late rate in (t, t+15] vs (t+15, t+30]."""
     def window_sum(col: str, start: int, end: int) -> pd.Series:
         width = end - start
         rolled = (panel.groupby("seller_id")[col]
@@ -151,8 +105,7 @@ def evaluate_at(panel: pd.DataFrame, min_n: int, cfg: dict) -> dict | None:
 
     feats = [c for c in df.columns
              if c not in NON_FEATURE and pd.api.types.is_numeric_dtype(df[c])]
-    # Count columns are volume in disguise; with volume held fixed by the
-    # label they can only add noise. "rate" features are the real candidates.
+    # Only rate features: with volume fixed by the label, counts add noise.
     rate_feats = [c for c in feats if not c.startswith(("order_count_", "late_count_",
                                                         "bad_reviews_"))]
 
@@ -188,7 +141,7 @@ def evaluate_at(panel: pd.DataFrame, min_n: int, cfg: dict) -> dict | None:
 
 
 def dump_schemas(loader: DataLoader) -> None:
-    """The order-level rebuild needs to know exactly what columns exist."""
+    """Print table schemas (input for the order-level rebuild)."""
     print("\n" + "=" * 78)
     print("RAW TABLE SCHEMAS")
     print("=" * 78)

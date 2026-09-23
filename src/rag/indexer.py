@@ -1,23 +1,7 @@
 """
-src/rag/indexer.py
-
-Role
-----
-Builds the searchable knowledge base: chunks documents into passages,
-embeds them (via src/preprocessing/embedder.py — sentence-transformers
-or TF-IDF fallback), and stores them in ChromaDB.
-
-Document sources indexed
--------------------------
-- One document per seller, built from its stored prediction and the SHAP
-  attribution behind it — so the chat can cite the MODEL's own reasoning
-  rather than paraphrasing a score.
-- Real Olist customer review text, so answers about what is going wrong
-  are grounded in what customers actually wrote.
-
-Note the reviews are in Brazilian Portuguese, because the source data is.
-That is deliberate: translating them would put a lossy layer between the
-answer and its evidence.
+Builds the RAG knowledge base in ChromaDB from two sources:
+- one document per seller, from its stored prediction and SHAP drivers
+- real Olist customer reviews (in Portuguese, as in the source data)
 """
 
 import json
@@ -42,7 +26,7 @@ def get_chroma_client():
 
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """Simple sliding-window character chunking with overlap."""
+    """Sliding-window character chunking with overlap."""
     if len(text) <= chunk_size:
         return [text]
     chunks = []
@@ -54,11 +38,7 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 
 def build_documents_from_predictions() -> list[dict]:
-    """
-    Turns each seller's stored prediction (the predictions table in MySQL)
-    into a readable text document — this is what lets the RAG chat answer
-    "why is Supplier X risky?" grounded in the model's actual SHAP output.
-    """
+    """One text document per seller from the predictions table, including SHAP drivers."""
     try:
         from src.ingestion.loader import DataLoader
         loader = DataLoader()
@@ -97,10 +77,7 @@ def build_documents_from_predictions() -> list[dict]:
 
 
 def build_documents_from_reviews(limit: int = 2000) -> list[dict]:
-    """
-    Turns REAL customer reviews into documents, so the RAG chat can ground
-    answers in what customers actually wrote about a seller's deliveries.
-    """
+    """Customer reviews as documents."""
     try:
         from src.ingestion.loader import DataLoader
         loader = DataLoader()
@@ -136,20 +113,14 @@ def build_documents_from_reviews(limit: int = 2000) -> list[dict]:
 
 
 def build_index(documents: list[dict] = None, reset: bool = True) -> chromadb.Collection:
-    """
-    Embed and store documents in ChromaDB. If no documents are passed,
-    builds the default knowledge base from predictions + recent signals.
-    """
+    """Embed and store documents in ChromaDB (default: predictions + reviews)."""
     try:
         cfg = load_config()["rag"]
         client = get_chroma_client()
 
         if reset:
-            # delete_collection drops the collection record but leaves its
-            # segment directory on disk, so every rebuild leaks ~6 MB of
-            # orphaned vectors. Log what is actually there so the growth is
-            # visible; scripts/export_serving_data.py clears the directory
-            # outright before a rebuild destined for deployment.
+            # delete_collection leaves old files on disk; log the size.
+            # export_serving_data.py wipes the directory before deployment.
             try:
                 client.delete_collection(_COLLECTION_NAME)
             except Exception:
@@ -167,8 +138,7 @@ def build_index(documents: list[dict] = None, reset: bool = True) -> chromadb.Co
         if documents is None:
             documents = build_documents_from_predictions() + build_documents_from_reviews()
 
-        # Chunk long documents (predictions/signals here are short, but this
-        # keeps the pipeline correct for longer real-world documents too)
+        # Chunk long documents.
         all_chunks, all_ids, all_metadata = [], [], []
         for doc in documents:
             chunks = chunk_text(doc["text"], cfg["chunk_size"], cfg["chunk_overlap"])

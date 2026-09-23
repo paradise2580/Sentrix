@@ -1,46 +1,10 @@
 """
-src/ingestion/fred_signals.py
+Fetches real daily WTI crude oil prices (DCOILWTICO) from FRED and turns
+them into a 0-1 scaled volatility signal.
 
-Role
-----
-Fetches REAL historical commodity/economic series from FRED (Federal Reserve
-Economic Data, St. Louis Fed) and converts them into the commodity-volatility
-signal used by SENTRIX's feature layer.
-
-Why FRED specifically — and why only this signal is real
----------------------------------------------------------
-SENTRIX's orders span Sept 2016 - Oct 2018. To be genuinely useful, an
-external-signal API must return data FOR THOSE DATES. Free tiers were
-evaluated for each signal type:
-
-  news      NewsAPI free tier serves roughly the last 30 days only. It
-            cannot backfill 2017, so live news would silently mismatch the
-            order dates. -> kept synthetic.
-  weather   OpenWeatherMap's free tier is current/forecast; multi-year
-            historical requires a paid plan. -> kept synthetic.
-  commodity FRED is a public government archive with decades of daily
-            history, free, and queryable by date range. -> REAL.
-
-So this module upgrades exactly the one signal that free tooling can
-honestly support, rather than pretending all three are real.
-
-Series used
------------
-  DCOILWTICO  Crude Oil WTI spot price (daily) - fuel cost, a real driver
-              of freight/logistics cost and delivery pressure.
-
-Volatility, not price
----------------------
-The raw price level is not comparable to the other 0-1 signals, so we
-convert it to rolling volatility (std-dev of daily returns) and min-max
-scale it to 0-1 - the same scale the synthetic weather/port signals use.
-
-No key / offline behaviour
---------------------------
-If FRED_API_KEY is absent or the API is unreachable, this raises a clear
-error and the caller falls back to the synthetic commodity series, so the
-pipeline never breaks. Provenance is recorded per row in MySQL
-(is_synthetic = 0 for FRED rows, 1 for generated rows).
+FRED is the only free source with history back to 2016-2018; weather and
+port signals stay synthetic. Without FRED_API_KEY the caller falls back to
+generated values. Rows record is_synthetic = 0 (FRED) or 1 (generated).
 """
 
 import os
@@ -65,10 +29,7 @@ def fred_key_available() -> bool:
 
 
 def fetch_series(start: str, end: str, series_id: str = _SERIES_ID) -> pd.DataFrame:
-    """
-    Fetch one FRED series over a date range.
-    Returns DataFrame[date, value] with missing observations dropped.
-    """
+    """Fetch one FRED series as DataFrame[date, value], dropping missing values."""
     api_key = os.getenv("FRED_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("FRED_API_KEY not set in .env")
@@ -99,9 +60,8 @@ def fetch_series(start: str, end: str, series_id: str = _SERIES_ID) -> pd.DataFr
 
 def to_daily_volatility(prices: pd.DataFrame, all_dates: pd.DatetimeIndex) -> pd.DataFrame:
     """
-    Convert a daily price series into a 0-1 scaled rolling-volatility signal
-    aligned to every calendar day (FRED skips weekends/holidays, so values
-    are forward-filled onto the full daily grid the panel expects).
+    Rolling volatility of daily returns, scaled to 0-1 and forward-filled
+    onto every calendar day.
     """
     df = prices.set_index("date").reindex(all_dates).ffill().bfill()
     df.index.name = "signal_date"
@@ -121,11 +81,8 @@ def to_daily_volatility(prices: pd.DataFrame, all_dates: pd.DatetimeIndex) -> pd
 
 def build_commodity_signal(states: list[str], start: str, end: str) -> pd.DataFrame:
     """
-    Build REAL commodity-volatility rows for every state over the date range.
-
-    Oil price is a national/global signal, so the same series applies to all
-    states - unlike weather, it is not location-specific. Rows are emitted
-    per state so the table shape matches the other signals and joins cleanly.
+    Commodity volatility rows for every state. Oil price is national, so each
+    state gets the same series.
     """
     try:
         all_dates = pd.date_range(start, end, freq="D")

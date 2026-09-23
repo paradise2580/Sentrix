@@ -1,49 +1,13 @@
 """
-src/ingestion/synthetic_signals.py
+Builds the external_signals table: daily weather severity, port congestion
+and commodity volatility per Brazilian state over the Olist date range.
 
-Role
-----
-Builds the external risk-signal layer: daily weather severity, port /
-logistics congestion, and commodity (fuel) volatility per Brazilian state,
-covering the real date range of the Olist orders.
+  commodity  real, from FRED when FRED_API_KEY is set (else generated)
+  weather    generated (no free historical source)
+  port       generated (no free historical source)
 
-Mixed provenance - this layer is NOT uniformly synthetic
----------------------------------------------------------
-  commodity  REAL, from FRED (Federal Reserve Economic Data) when
-             FRED_API_KEY is set - see src/ingestion/fred_signals.py.
-             FRED is a free public archive with genuine daily history
-             covering 2016-2018, so it can be matched to real order dates.
-             Falls back to generated values if the key is missing.
-  weather    Generated. OpenWeatherMap's free tier cannot backfill
-             multi-year history, so live data could not be date-matched
-             to 2016-2018 orders.
-  port       Generated. No free public source for historical port
-             congestion.
-
-Every row records its own provenance via is_synthetic (0 = real, 1 =
-generated), so the boundary is provable in the database rather than
-merely asserted here.
-
-Why this layer is synthetic — and why that is defensible
----------------------------------------------------------
-Everything else in SENTRIX is real Olist data. This layer is generated
-because no public dataset pairs real marketplace orders with real daily
-weather / port-congestion / fuel-price data for each seller's location.
-That pairing is exactly the kind of proprietary, joined-up data companies
-build internally — which is why predicting supplier risk is a real problem
-worth solving, not a sign the approach is flawed.
-
-Honesty guarantees built into this generator
----------------------------------------------
-1. Signals are generated from the REAL state list and the REAL Olist date
-   range — they attach to real entities, not invented ones.
-2. Signals are generated INDEPENDENTLY of the real is_late label. We do NOT
-   peek at outcomes and rig signals to "predict" them. Doing so would
-   manufacture a fake correlation and produce dishonestly good metrics.
-   If a model finds these features weakly useful, that is incidental; if it
-   finds them useless, that is an honest and reportable result.
-3. Every row is written with is_synthetic=1 in MySQL, so synthetic data can
-   never be silently mistaken for real data downstream.
+Generated values never look at the is_late label, so they can't fake a
+correlation. Each row records is_synthetic (0 = real, 1 = generated).
 """
 
 import numpy as np
@@ -64,11 +28,8 @@ def _generate_state_series(state: str, dates: pd.DatetimeIndex,
                             rng: np.random.Generator,
                             sources: list[str]) -> list[dict]:
     """
-    Produce a plausible daily series per source for one state.
-
-    Uses a smooth random walk plus occasional multi-day "shock" windows, so
-    values look like real environmental/logistics data (autocorrelated, with
-    episodic spikes) rather than white noise. No dependence on any label.
+    Daily series per source for one state: a mean-reverting random walk
+    with occasional multi-day shocks. Independent of any label.
     """
     rows = []
     for source in sources:
@@ -101,10 +62,7 @@ def _generate_state_series(state: str, dates: pd.DatetimeIndex,
 
 def generate_signals(seed: int | None = None,
                       sources: list[str] | None = None) -> pd.DataFrame:
-    """
-    Build the synthetic signal table spanning the REAL states and REAL date
-    range present in the loaded Olist data.
-    """
+    """Synthetic signals for the states and date range in the loaded Olist data."""
     try:
         cfg = load_config()
         rng = np.random.default_rng(seed or cfg["project"]["random_state"])
@@ -139,14 +97,8 @@ def generate_signals(seed: int | None = None,
 
 def generate_and_load(reset: bool = True) -> dict:
     """
-    Build the full external-signal layer and load it into MySQL.
-
-    Commodity volatility is pulled REAL from FRED when FRED_API_KEY is set;
-    if the key is absent or FRED is unreachable, it is generated instead and
-    flagged accordingly. Weather and port are always generated.
-
-    Returns a provenance breakdown so the caller can see exactly how many
-    rows are real vs generated.
+    Build the signal layer and load it into MySQL. Commodity comes from FRED
+    when possible. Returns counts of real vs generated rows.
     """
     try:
         loader = DataLoader()

@@ -1,69 +1,13 @@
 """
-src/preprocessing/order_features.py
+Builds the order-level feature table: one row per (order_id, seller_id),
+labelled with whether the order arrived after its promised date.
 
-Builds the ORDER-level feature table: one row per (order_id, seller_id),
-labelled with whether that order was delivered after its promised date.
+Every feature must be known at purchase time. Excluded for leakage:
+order_approved_at, order_delivered_carrier_date,
+order_delivered_customer_date and delay_days. Seller and state history is
+lagged by `history_lag_days`, because recent orders have no outcome yet.
 
-Why the project models orders and not seller-days
--------------------------------------------------
-The first two versions of SENTRIX predicted a seller-level target — "will
-this seller have trouble in the next 30 days" — and both failed, in ways
-that were measured rather than guessed:
-
-  1. scripts/ablation.py showed the v1 "any late order" label was a volume
-     detector. A forest given ONLY the three order_count_* columns scored
-     ROC-AUC 0.7317; the full 47-feature model scored 0.6494. One column
-     beat the model.
-
-  2. scripts/label_screen.py built a label that neutralises volume by
-     construction (worst 20% of forward late rate within month x
-     volume-decile cells). It worked as designed — volume_roc 0.4946, base
-     rate drift 1.59 points — and the model then scored 0.5056. Removing
-     the confound removed the performance with it.
-
-  3. scripts/label_screen2.py found out why. Split-half reliability — a
-     seller's late rate in days 1-15 of the window against their own rate
-     in days 16-30 — climbs from 0.21 to 0.39 as the denominator grows, so
-     a real seller effect exists. But persistence AUC, the trailing 30-day
-     late rate used directly as a score, sits at 0.46-0.52 at EVERY
-     denominator. The seller effect is contemporaneous and does not carry
-     across the window boundary.
-
-     In plain terms: a seller who is running late this month is genuinely
-     running late all month, and that tells you almost nothing about next
-     month. Lateness here is a shock — a bad batch, a carrier problem, a
-     demand spike — not a stable seller trait. No feature set predicts a
-     target that does not persist.
-
-The order is a different question, and a well-posed one. "Will THIS parcel
-miss THIS promised date" is answered by things known the moment it is
-placed: how much slack the promise leaves, how far it has to travel, how
-heavy it is, what it cost to ship. Those are properties of the shipment,
-not forecasts of a seller's future mood.
-
-Seller-level risk does not disappear — it is recovered by AGGREGATING
-predicted order risk up to the seller (see evaluation/generate_predictions).
-Modelling the unit where the signal lives and deciding on the unit where
-the decision is made is the correct split of the problem, and it also
-dissolves the volume confound for free: a seller's risk becomes the MEAN
-predicted risk of their open orders, which is a rate and cannot be inflated
-by shipping more.
-
-Leakage control
----------------
-Every feature is knowable at PURCHASE time. Explicitly excluded, and
-listed here because each one is individually tempting:
-
-    order_approved_at              known hours later, not at purchase
-    order_delivered_carrier_date   the handover — happens after
-    order_delivered_customer_date  this IS the outcome
-    delay_days                     this IS the outcome, in days
-
-The seller's own history is included but LAGGED by
-`history_lag_days`. A seller's late rate cannot be computed from orders
-whose delivery outcome is not yet known, and an order purchased today has
-no outcome for roughly two weeks. Using an unlagged expanding mean would
-hand the model outcomes that, in production, would not exist yet.
+Why orders and not sellers: see docs/DESIGN.md.
 """
 
 import sys
@@ -80,7 +24,7 @@ logger = get_logger(__name__)
 
 TARGET = load_config()["model"]["target_column"]
 
-# Only features knowable at purchase time reach the model; see module docstring.
+# Only columns known at purchase time are selected.
 ORDER_SQL = """
     SELECT  oi.order_id,
             oi.seller_id,
@@ -117,10 +61,8 @@ def load_orders() -> pd.DataFrame:
                 "shipping_limit_date"]:
         df[col] = pd.to_datetime(df[col], errors="coerce")
 
-    # MySQL returns SUM()/AVG() over DECIMAL columns as Python Decimal, which
-    # pandas stores as dtype=object. Left alone, get_feature_columns would
-    # classify total_price as CATEGORICAL and one-hot encode several thousand
-    # distinct prices. Cast explicitly rather than trusting the driver.
+    # MySQL returns DECIMAL aggregates as Python Decimal (dtype=object), which
+    # would otherwise be treated as categorical and one-hot encoded.
     for col in ["n_items", "total_price", "total_freight", "avg_weight_g",
                 "max_volume_cm3", "customer_zip", "seller_zip", "is_late"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -132,24 +74,19 @@ def load_orders() -> pd.DataFrame:
 # --------------------------------------------------------------- features
 def add_promise_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Slack in the promise, and the handover deadline.
-
-    `promised_days` is the single most informative thing known at purchase:
-    the marketplace sets the estimate per order from distance and carrier,
-    so a tight promise on a long route is the shape of a late delivery
-    before anything has shipped.
+    Days promised for delivery and for handover to the carrier.
+    `promised_days` is the strongest single feature in the project.
     """
     purchase = df["order_purchase_timestamp"]
     df["promised_days"] = (df["order_estimated_delivery_date"] - purchase).dt.total_seconds() / 86400
     df["shipping_limit_days"] = (df["shipping_limit_date"] - purchase).dt.total_seconds() / 86400
-    # How much of the promised window the seller is allowed to spend before
-    # even handing the parcel over.
+    # Share of the promised window the seller may use before handover.
     df["handover_share"] = df["shipping_limit_days"] / df["promised_days"].replace(0, np.nan)
     return df
 
 
 def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Congestion is seasonal and weekly; both are known at purchase."""
+    """Hour, weekday, month and weekend flag of the purchase."""
     purchase = df["order_purchase_timestamp"]
     df["purchase_hour"] = purchase.dt.hour
     df["purchase_dow"] = purchase.dt.dayofweek
@@ -159,7 +96,7 @@ def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_shipment_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Physical and commercial properties of the parcel itself."""
+    """Freight ratio, price per item, weight, volume and density."""
     df["freight_ratio"] = df["total_freight"] / df["total_price"].replace(0, np.nan)
     df["price_per_item"] = df["total_price"] / df["n_items"].replace(0, np.nan)
     df["density"] = df["avg_weight_g"] / df["max_volume_cm3"].replace(0, np.nan)
@@ -170,18 +107,12 @@ def add_shipment_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_route_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Distance proxy from Brazilian postcode prefixes.
-
-    CEP prefixes are allocated geographically — the first digits move
-    broadly north-west to south-east — so the gap between a seller's and a
-    customer's prefix is a usable stand-in for distance without needing a
-    geocoding table. It is a proxy, not kilometres, and is labelled as one.
+    Distance proxy from Brazilian postcode (CEP) prefixes, which are assigned
+    geographically. A rough stand-in for distance, not kilometres.
     """
     df["same_state"] = (df["seller_state"] == df["customer_state"]).astype(int)
     df["zip_gap"] = (df["customer_zip"].astype(float) - df["seller_zip"].astype(float)).abs()
-    # Plain float, not the nullable Int64 dtype — SimpleImputer and
-    # StandardScaler choke on pd.NA, and a missing prefix must survive as NaN
-    # for the median imputer to handle it.
+    # float, not Int64: sklearn imputers need NaN, not pd.NA.
     df["seller_zip_region"] = df["seller_zip"].astype(float) // 1000
     df["customer_zip_region"] = df["customer_zip"].astype(float) // 1000
     return df
@@ -189,19 +120,11 @@ def add_route_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_lagged_history(df: pd.DataFrame, lag_days: int) -> pd.DataFrame:
     """
-    The seller's and the route's observed late rate, as of `lag_days` before
-    this order was placed.
+    Seller and customer-state late rate as of `lag_days` before each order.
 
-    The lag is the whole point. An order placed today has no delivery
-    outcome for roughly two weeks, so a seller's "current" late rate is not
-    knowable at purchase time. Computing an expanding mean without the lag
-    would feed the model outcomes that do not exist yet in production —
-    the same class of error as the volume confound, just harder to see.
-
-    Implementation: aggregate outcomes per (key, day), take a cumulative
-    sum over days, then as-of join each order to the cumulative state at
-    (purchase_date - lag_days). merge_asof does the backward lookup in one
-    pass instead of a per-row scan.
+    The lag matters: recent orders have no delivery outcome yet, so using
+    them would leak information that production would not have.
+    Cumulative daily counts are joined back with merge_asof.
     """
     df = df.sort_values("order_purchase_timestamp").reset_index(drop=True)
     df["purchase_date"] = df["order_purchase_timestamp"].dt.normalize()
@@ -233,11 +156,7 @@ def add_lagged_history(df: pd.DataFrame, lag_days: int) -> pd.DataFrame:
 
 
 def collapse_categories(df: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """
-    Keep the `top_n` most common product categories; everything else becomes
-    'other'. 74 one-hot columns of which most fire a handful of times is
-    variance, not signal.
-    """
+    """Keep the `top_n` most common categories; the rest become 'other'."""
     top = df["category"].value_counts().head(top_n).index
     df["category"] = df["category"].where(df["category"].isin(top), "other").fillna("other")
     return df
@@ -261,7 +180,7 @@ def build_order_feature_table() -> pd.DataFrame:
         df = collapse_categories(df, top_n)
 
         df[TARGET] = df["is_late"].astype(int)
-        # `as_of_date` is the name every downstream module splits on.
+        # Downstream modules split on `as_of_date`.
         df["as_of_date"] = df["order_purchase_timestamp"]
 
         drop = ["order_purchase_timestamp", "order_estimated_delivery_date",
@@ -269,13 +188,11 @@ def build_order_feature_table() -> pd.DataFrame:
                 "customer_zip", "seller_zip", "avg_weight_g", "max_volume_cm3"]
         df = df.drop(columns=[c for c in drop if c in df.columns])
 
-        # A promise that has already expired, or a missing timestamp, is not a
-        # scorable order.
+        # Drop orders with a missing or non-positive promise window.
         df = df[df["promised_days"].notna() & (df["promised_days"] > 0)]
 
-        # The guard must not flag the target itself — `is_late_delivery`
-        # contains "deliver", and an earlier version of this check failed the
-        # build on its own label.
+        # Leakage guard: fail if any outcome column survived. The target is
+        # excluded explicitly.
         outcome_markers = ("order_delivered", "delay_days", "order_approved")
         leaked = [c for c in df.columns
                   if c != TARGET and c.startswith(outcome_markers)]

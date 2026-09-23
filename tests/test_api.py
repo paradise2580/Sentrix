@@ -46,12 +46,7 @@ def test_chat_rejects_short_question():
 
 
 def test_metrics_returns_every_trained_model():
-    """
-    Asserts the comparison is non-empty and internally consistent rather than
-    pinning a model count. The count changed from 6 to 5 when the sequence
-    model was dropped at the order grain, and a hard-coded 6 turned a
-    deliberate design decision into a red build.
-    """
+    """The comparison table is non-empty and consistent (no fixed model count)."""
     r = client.get("/metrics")
     assert r.status_code in (200, 404)
     if r.status_code == 200:
@@ -64,10 +59,7 @@ def test_metrics_returns_every_trained_model():
 
 @pytest.mark.skipif(not mysql_is_reachable(), reason="MySQL not reachable")
 def test_summary_endpoint_returns_portfolio_kpis():
-    """
-    /summary must serve the dashboard's landing view in one call — the fix for
-    the frontend previously pulling all 1,325 seller rows just to compute KPIs.
-    """
+    """/summary returns the dashboard's KPIs in one call."""
     r = client.get("/summary")
     assert r.status_code == 200
     body = r.json()

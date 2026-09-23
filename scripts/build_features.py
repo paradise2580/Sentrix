@@ -1,9 +1,7 @@
 """
-scripts/build_features.py
-
-Standalone entry point: read the real Olist tables (plus the flagged
-synthetic signal layer) from MySQL, build the seller-day feature table,
-and save it to data/processed/features.csv.
+LEGACY: builds the old seller-day feature table (preprocessing/feature_eng.py)
+and saves it to data/processed/features.csv. The current model uses
+scripts/build_order_features.py.
 
 Run with:
     python scripts/build_features.py

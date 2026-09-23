@@ -1,32 +1,10 @@
 """
-pipelines/sentrix_dag.py
+Airflow DAG: refresh external signals -> rebuild features -> check drift and
+regenerate predictions -> re-index RAG.
 
-Role
-----
-Schedules SENTRIX's data pipeline to refresh automatically — the
-production analogue of running scripts/ manually. On a real deployment
-this DAG runs every 6 hours: fetch fresh signals, rebuild features,
-retrain if needed, check for drift.
-
-IMPORTANT — environment isolation
------------------------------------
-Airflow hard-pins sqlalchemy<2.0, which conflicts directly with this
-project's SQLAlchemy 2.0 usage (src/ingestion/db.py) and with modern
-versions of FastAPI/MLflow's own dependencies. This is a well-known,
-real constraint of Airflow's dependency footprint — the correct
-production pattern (and the one this DAG is written for) is:
-
-    Airflow runs in its OWN isolated environment (a dedicated virtualenv,
-    a separate Docker container, or a managed service like MWAA / Cloud
-    Composer / Astronomer) and triggers SENTRIX's actual pipeline code via
-    subprocess calls, a DockerOperator/KubernetesPodOperator, or an HTTP
-    call to the FastAPI service — NEVER via direct Python imports sharing
-    one environment with the serving stack.
-
-This DAG is written that way: every task shells out to a SENTRIX script
-via BashOperator rather than importing SENTRIX modules directly into
-Airflow's own Python process. That keeps the two dependency trees fully
-separate, which is the actual fix for the conflict above.
+Airflow needs its own environment (it pins SQLAlchemy < 2.0, this project
+uses 2.x), so every task runs a SENTRIX script via BashOperator instead of
+importing project code.
 """
 
 from datetime import datetime, timedelta

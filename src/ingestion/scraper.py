@@ -1,25 +1,11 @@
 """
-src/ingestion/scraper.py
+Fetches live external signals from free-tier APIs (news, weather,
+commodity, port). Returns raw data only; feature building happens in
+src/preprocessing.
 
-Role
-----
-Fetches live external signals from free-tier APIs. Each source is its own
-method so they can be tested, scheduled, and rate-limited independently
-(this module is what the Airflow DAG calls every 6 hours).
-
-Design note
------------
-This module ONLY fetches and returns raw signals. It does not clean them
-or turn them into model features — that is src/preprocessing's job. Keeping
-fetch and transform separate means a failed API call never corrupts
-feature logic downstream.
-
-No-key behaviour
------------------
-If an API key is missing from .env, each method logs a warning and returns
-an empty result rather than raising — a missing key should degrade the
-pipeline gracefully, not crash it. Once real keys are added to .env, these
-same methods start returning live data with no code changes required.
+Not used by the current pipeline: free tiers can't backfill 2016-2018, so
+the Airflow DAG uses synthetic_signals.py instead. Missing API keys log a
+warning and return empty results.
 """
 
 import os
@@ -120,19 +106,14 @@ class SignalScraper:
             raise SentrixException(e, sys)
 
     def fetch_port_status(self) -> dict | None:
-        """
-        Port congestion index. MarineTraffic's free tier is heavily
-        restricted, so this is a placeholder integration point — swap in
-        a real port-data provider's endpoint here when available.
-        """
+        """Port congestion placeholder; no usable free data source."""
         logger.warning("Port status live fetch not configured — using synthetic fallback upstream")
         return None
 
     def fetch_all_signals(self, suppliers: list[dict]) -> dict:
         """
         Fetch every signal type for a list of suppliers, e.g.
-        [{"supplier_id": 1, "region": "Shanghai, China", "lat": 31.23, "lon": 121.47}, ...]
-        This is the entry point the Airflow DAG calls.
+        [{"supplier_id": 1, "region": "...", "lat": 31.23, "lon": 121.47}, ...]
         """
         results = {"news": [], "weather": [], "commodity": [], "port": []}
         for s in suppliers:

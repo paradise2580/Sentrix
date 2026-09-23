@@ -13,10 +13,7 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
-    # Read the username into an env var so the steps below can branch on
-    # whether it is configured. A secret cannot be tested directly in a
-    # job-level `if:` — the secrets context is not available there — which
-    # is why this is a step rather than a job condition.
+    # Secrets can't be checked in a job-level `if:`, so check them in a step.
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
@@ -26,11 +23,7 @@ jobs:
 
       - name: Check for registry credentials
         id: creds
-        # Without this guard the workflow fails at the login step on every
-        # run of a fork or a repo where the secrets were never set, which
-        # puts a permanent red X on the repository for a reason that has
-        # nothing to do with the code. A publish step with nowhere to
-        # publish should no-op and say so, not fail.
+        # Skip (instead of failing) when Docker Hub secrets aren't configured.
         run: |
           if [ -n "$DOCKERHUB_USERNAME" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"

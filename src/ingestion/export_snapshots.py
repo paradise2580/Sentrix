@@ -1,13 +1,5 @@
 """
-src/ingestion/export_snapshots.py
-
-Role
-----
-DVC versions files, not live database state — so before data can be
-DVC-tracked, it needs to exist as a file. This exports the current MySQL
-table contents to data/raw/*.csv, giving DVC something concrete to track
-a version of. Re-running this after new data lands produces a new file
-version DVC can diff and roll back to.
+Exports MySQL tables to data/raw/*.csv so DVC can version them.
 
 Run with:
     python -m src.ingestion.export_snapshots

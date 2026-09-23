@@ -14,9 +14,8 @@ paths:
   mlflow_tracking_uri: artifacts/mlruns
 
 mysql:
-  # Non-secret connection defaults only. The password is deliberately absent:
-  # it is read from MYSQL_PASSWORD in .env (see .env.example). Any of these
-  # can be overridden by the matching MYSQL_* environment variable.
+  # Non-secret defaults. The password comes from MYSQL_PASSWORD in .env, and
+  # any value here can be overridden by the matching MYSQL_* variable.
   host: 127.0.0.1
   port: 3306
   user: sentrix_user
@@ -32,69 +31,38 @@ mysql:
     predictions: predictions
 
 preprocessing:
-  # Fraction of the timeline held out for final test / for calibration.
+  # Share of the timeline held out for test and for calibration.
   test_size: 0.20
   calibration_size: 0.10
-  # Gap enforced before each downstream block. Must be >= label_horizon_days,
-  # otherwise a retained training label resolves inside the next block and
-  # the held-out score is optimistic. See models/trainer.py.
+  # Gap dropped before each later block. Must be >= label_horizon_days so no
+  # training label resolves inside the next block.
   embargo_days: 30
   label_horizon_days: 30
 
-  # --- label definition -------------------------------------------------
-  # The target is "does this seller's LATE RATE over the next 30 days exceed
-  # late_rate_threshold", NOT "does any order arrive late".
-  #
-  # The original 'any late order' label was volume-confounded by
-  # construction: with a per-order late rate near 8%, a seller shipping 100
-  # orders is ~99.97% certain to have one arrive late while a seller shipping
-  # three is at 22%. The label was therefore close to a deterministic
-  # function of order count, and the ablation proved it — ranking sellers by
-  # order_count_30d alone scored PR-AUC 0.4455 against the full 47-feature
-  # model's 0.3911. The model lost to one column.
-  #
-  # A rate is volume-normalised, so being busy no longer implies being risky.
-  late_rate_threshold: 0.15      # ~2x the 8.1% marketplace-wide order late rate
-  # A rate needs a denominator. Seller-days with fewer than this many orders
-  # in the forward window are dropped rather than labelled, because 0/1 and
-  # 1/1 are noise, not signal.
-  min_forward_orders: 5
+  # --- used only by the retired seller-level model (feature_eng.py) ---
+  late_rate_threshold: 0.15      # seller is positive if forward late rate >= 15%
+  min_forward_orders: 5          # seller-days with fewer forward orders are unlabelled
 
   rolling_windows: [7, 14, 30]
   outlier_iqr_multiplier: 1.5
-  # Sellers below this lifetime order count are dropped: too little history
-  # to model, and they would otherwise dominate the panel with empty rows.
+  # Sellers with fewer lifetime orders are dropped from the seller-day panel.
   active_min_orders: 10
 
-# --- order-level model ---------------------------------------------------
-# SENTRIX predicts whether an individual ORDER will miss its promised
-# delivery date. Two seller-level formulations were built and killed first;
-# scripts/label_screen2.py has the evidence. The short version: a seller's
-# late rate is consistent within a month (split-half r rises to 0.39) and
-# does not carry to the next one (persistence AUC 0.46-0.52 at every
-# denominator). Lateness is a shock, not a seller trait, so the seller-month
-# target was not predictable by anything measured before it.
+# --- order-level model (current) ---
 order_model:
-  # An order placed today has no delivery outcome for roughly two weeks, so
-  # the seller's "current" late rate is not knowable at purchase time.
-  # Historical rates are therefore computed as of this many days BEFORE the
-  # order. Without the lag the model trains on outcomes that would not exist
-  # yet in production.
+  # Seller/state history is computed as of this many days before each order,
+  # because recent orders don't have a delivery outcome yet.
   history_lag_days: 30
-  # Rare categories become 'other': 74 one-hot columns that each fire a
-  # handful of times are variance, not signal.
+  # Less common product categories are grouped as 'other'.
   top_categories: 20
-  # Seller risk shown in the dashboard is the MEAN predicted risk of the
-  # seller's most recent orders — a rate, so it cannot be inflated by
-  # shipping more. Sellers with fewer than this many recent orders are not
-  # ranked, because a mean over two orders is noise.
+  # Seller risk = mean predicted risk of the seller's orders in the last
+  # `seller_rollup_window` days; sellers with fewer orders than the minimum
+  # are not ranked.
   seller_rollup_window: 90
   seller_rollup_min_orders: 5
 
 model:
-  # The target is the order's own outcome: delivered after the promised
-  # date. Unlike the two seller-level targets before it, this is a fact
-  # about a shipment rather than a forecast of a seller's future behaviour.
+  # 1 if the order was delivered after its promised date.
   target_column: is_late_delivery
 
   logistic_regression:
@@ -118,16 +86,14 @@ model:
     learning_rate: 0.05
 
   ensemble:
-    # Folds for the stacker's TimeSeriesSplit. Never a plain k-fold here —
-    # see models/ensemble.py for what that cost the first time round.
+    # Forward-chaining folds (TimeSeriesSplit) for the stacker.
     n_splits: 3
 
   optuna:
     n_trials: 25
-    # Forward-chaining folds, never a shuffled k-fold — see models/boosting.py.
+    # Forward-chaining folds, never shuffled k-fold.
     cv_folds: 3
-    # Tune on the most recent N training rows. Hyperparameter ranking is
-    # stable under subsampling; fit time is not.
+    # Tune on the most recent N training rows to save time.
     tune_sample_rows: 80000
     direction: maximize
     scoring: average_precision
@@ -141,26 +107,20 @@ model:
     batch_size: 256
     learning_rate: 0.001
 
-  # Post-hoc probability calibration, fitted on the held-out calibration block.
+  # Fitted on the held-out calibration block.
   calibration_method: isotonic
 
-  # Relative business cost of the two error types. A seller who goes late
-  # unflagged costs ~10x an analyst's wasted review; the cost-optimal
-  # decision threshold is derived from this ratio rather than defaulting
-  # to 0.5, which silently assumes the two errors are equally bad.
+  # A missed late order is treated as 10x as costly as a false alarm; the
+  # decision threshold is chosen to minimise total cost.
   cost_false_negative: 10.0
   cost_false_positive: 1.0
 
   decision_threshold: 0.5
 
-  # Risk bands are CAPACITY-based, not fixed probability cuts. With a base
-  # rate near 0.17 a calibrated model almost never emits a probability above
-  # 0.75, so absolute cuts of 0.25/0.50/0.75 would leave the top bands
-  # permanently empty and the dashboard permanently green. Percentile bands
-  # instead answer the question an ops team actually asks — "who are the
-  # worst 5% this week?" — and line up directly with the capture@k metrics.
+  # Bands are by rank, not fixed probability cutoffs: with a ~5% base rate,
+  # calibrated scores are rarely high enough to fill fixed top bands.
   risk_band_quantiles:
-    critical: 0.95   # top 5% of the scored population
+    critical: 0.95   # top 5% of scored sellers
     high: 0.80       # next 15%
     medium: 0.50     # next 30%
 
@@ -169,9 +129,7 @@ rag:
   chunk_overlap: 50
   top_k: 4
   embedding_model: all-MiniLM-L6-v2
-  # Hosted catalogues change without notice — llama-3.3-70b-versatile was
-  # retired mid-project and started 404ing. chain.py walks this list on a
-  # model_not_found so the demo survives the next retirement too.
+  # Tried in order if a model has been retired by the provider.
   llm_model: openai/gpt-oss-20b
   llm_fallback_models:
     - openai/gpt-oss-120b
@@ -190,7 +148,5 @@ frontend:
 
 monitoring:
   drift_report_path: logs/drift_report.html
-  # CI fails the build if the best model's PR-AUC on the shared evaluation
-  # set falls below this. Set from the current champion with headroom for
-  # run-to-run variance, not aspirationally.
+  # CI model gate: the build fails if the best model's PR-AUC is below this.
   pr_auc_gate: 0.30

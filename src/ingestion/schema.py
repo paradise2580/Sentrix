@@ -1,22 +1,9 @@
 """
-src/ingestion/schema.py
+Creates the MySQL tables.
 
-Role
-----
-Defines and creates the MySQL tables SENTRIX runs on.
-
-Data provenance (IMPORTANT — this distinction is deliberate and load-bearing)
------------------------------------------------------------------------------
-REAL tables      — loaded verbatim from the Olist Brazilian E-Commerce public
-                   dataset (real marketplace: ~100k orders, ~3k sellers,
-                   2016-2018). Sellers act as the "suppliers" whose delivery
-                   risk this project predicts. The late-delivery label is
-                   COMPUTED FROM REAL DATES, never invented.
-SYNTHETIC table  — external_signals only. No public dataset pairs real orders
-                   with real daily weather / port-congestion / commodity data
-                   for each seller's location, so that layer is generated.
-                   Every row carries is_synthetic=1 so it can never be
-                   silently mistaken for real data.
+All tables hold real Olist data except external_signals, where weather and
+port congestion are generated (is_synthetic=1). predictions holds model
+output.
 """
 
 from sqlalchemy import text
@@ -152,7 +139,7 @@ def create_all_tables() -> None:
 
 
 def drop_all_tables() -> None:
-    """Drop all tables — used for a clean rebuild during development."""
+    """Drop all tables for a clean rebuild."""
     try:
         engine = get_engine()
         with engine.begin() as conn:
@@ -160,7 +147,7 @@ def drop_all_tables() -> None:
             for table_name in reversed(_CREATION_ORDER):
                 conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
                 logger.info(f"Table dropped: {table_name}")
-            # legacy tables from the pre-Olist synthetic schema
+            # legacy tables from an older schema
             for legacy in ["suppliers", "disruption_events"]:
                 conn.execute(text(f"DROP TABLE IF EXISTS {legacy}"))
             conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))

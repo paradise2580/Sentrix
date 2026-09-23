@@ -1,33 +1,12 @@
 """
-src/ingestion/db.py
+Builds the SQLAlchemy engine every module uses.
 
-Role
-----
-One function that builds the SQLAlchemy engine every module talks to the
-database through, so credentials and connection logic live in exactly one
-place.
+- MySQL for the full pipeline (ingestion, features, training).
+- SQLite for serving, when SENTRIX_DB_URL is set. The deployed API only
+  reads precomputed rows, so a committed SQLite file is enough.
 
-Two backends, one interface
----------------------------
-- **MySQL** for the full pipeline: ingestion, feature building, training.
-  This is where the 100k real Olist orders live.
-- **SQLite** for serving, selected by setting SENTRIX_DB_URL.
-
-The serving path reads a few thousand precomputed prediction rows and
-never writes. Standing up a managed MySQL for that would be renting a
-database to serve a file — and on a free tier the managed Postgres option
-*expires after 30 days*, which would silently break a demo link exactly
-when someone clicks it. A SQLite file committed alongside the code has no
-service to expire, no credentials to leak, and no cold-start penalty.
-
-Credential policy
------------------
-Host, port, user and database have non-secret defaults in config.yaml and
-can be overridden by MYSQL_* environment variables. The PASSWORD has no
-config.yaml default on purpose: config.yaml is committed, .env is not, and
-a working password in a committed file is the most common way a project
-leaks a credential. If MYSQL_PASSWORD is unset, this fails immediately
-with an instruction rather than trying to connect with None.
+MYSQL_PASSWORD must come from the environment (.env); it is never stored
+in config.yaml.
 """
 
 import os
@@ -51,7 +30,7 @@ SERVING_URL_ENV = "SENTRIX_DB_URL"
 
 
 def _resolve(key_env: str, key_cfg: str, cfg_section: dict, default=None):
-    """Prefer an environment variable; fall back to config.yaml; then default."""
+    """Environment variable first, then config.yaml, then the default."""
     return os.getenv(key_env) or cfg_section.get(key_cfg, default)
 
 
@@ -68,13 +47,7 @@ def _resolve_password() -> str:
 
 
 def _serving_engine(url: str) -> Engine:
-    """
-    Build an engine from an explicit SQLAlchemy URL — the serving path.
-
-    A relative sqlite path is resolved against the project root, not the
-    working directory, so `uvicorn api.app:app` behaves the same whether it
-    is launched from the repo root or from inside a container's WORKDIR.
-    """
+    """Engine from an explicit URL (serving). Relative sqlite paths resolve from the project root."""
     if url.startswith("sqlite:///") and not url.startswith("sqlite:////"):
         rel = url[len("sqlite:///"):]
         if not Path(rel).is_absolute():
@@ -84,7 +57,7 @@ def _serving_engine(url: str) -> Engine:
 
 
 def get_engine(force_new: bool = False) -> Engine:
-    """Build (or return the cached) engine for whichever backend is configured."""
+    """Build (or return the cached) engine for the configured backend."""
     global _engine_cache
     if _engine_cache is not None and not force_new:
         return _engine_cache

@@ -1,19 +1,8 @@
 """
-src/exception.py
-
-Role
-----
-Wrap every caught error with the exact file and line number where it
-occurred, so debugging a failure is instant instead of guesswork through
-a generic traceback.
-
-Usage pattern in every module
-------------------------------
-    from src.exception import SentrixException
-    import sys
+SentrixException: wraps any error with the file and line where it happened.
 
     try:
-        df = load_data(path)
+        ...
     except Exception as e:
         raise SentrixException(e, sys) from e
 """
@@ -22,7 +11,7 @@ import sys
 
 
 def _error_message_detail(error: Exception, error_detail: "sys") -> str:
-    """Build a precise message: which file, which line, what went wrong."""
+    """Error message with file name, line number and the original error."""
     _, _, exc_tb = error_detail.exc_info()
 
     if exc_tb is None:
@@ -35,14 +24,7 @@ def _error_message_detail(error: Exception, error_detail: "sys") -> str:
 
 
 class SentrixException(Exception):
-    """
-    Custom exception used across all SENTRIX modules.
-
-    Every module catches its own low-level exceptions (SQL errors, HTTP
-    errors, shape mismatches, etc.) and re-raises them as SentrixException,
-    so the top-level caller — the API, a pipeline task, a test — always
-    receives one consistent, traceable exception type.
-    """
+    """Single exception type raised by every SENTRIX module."""
 
     def __init__(self, error: Exception, error_detail: "sys" = sys):
         self.message = _error_message_detail(error, error_detail)

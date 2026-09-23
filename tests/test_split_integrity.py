@@ -1,12 +1,7 @@
 """
-tests/test_split_integrity.py
-
-The tests that protect the project's most important correctness claim:
-that no information from the evaluation period reaches the model.
-
-Leakage is not the kind of bug that raises an exception. It makes every
-number go UP, which is exactly why it survives code review — it looks like
-progress. So it gets tested explicitly, and the tests fail the build.
+Leakage tests: no information from the evaluation period may reach the
+model. Leakage never raises an error, it just makes scores look better,
+so it is tested explicitly.
 """
 
 import numpy as np
@@ -47,9 +42,8 @@ def test_blocks_are_strictly_ordered_in_time(panel):
 
 def test_embargo_gap_is_at_least_the_label_horizon(panel):
     """
-    The core guarantee. A label on the last training day resolves
-    HORIZON days later; if that date is inside the next block, the two
-    blocks share information and the held-out score is inflated.
+    The gap must be at least the label horizon, or a training label resolves
+    inside the next block.
     """
     train, calib, test = purged_temporal_split(panel, 0.2, 0.1, HORIZON)
 
@@ -92,11 +86,7 @@ def test_impossible_embargo_is_rejected(panel):
 
 # ------------------------------------------------------- comparison integrity
 def test_models_scored_on_different_row_counts_cannot_be_ranked():
-    """
-    PR-AUC depends on the base rate, so a table mixing models scored on
-    different subsets is meaningless. compare_models must refuse rather
-    than print it.
-    """
+    """compare_models must refuse models scored on different rows."""
     rng = np.random.default_rng(1)
     y_a, p_a = rng.integers(0, 2, 500), rng.random(500)
     y_b, p_b = rng.integers(0, 2, 400), rng.random(400)
@@ -124,10 +114,7 @@ def test_capture_at_k_of_a_random_ranker_is_about_k():
 
 # ------------------------------------------------------------- calibration
 def test_isotonic_calibration_reduces_calibration_error():
-    """
-    Simulate the exact failure mode class_weight='balanced' and SMOTE
-    produce: correct ranking, systematically inflated probabilities.
-    """
+    """Isotonic calibration fixes inflated probabilities without changing the ranking."""
     rng = np.random.default_rng(3)
     true_p = rng.beta(2, 8, 8000)                  # true rate ~20%
     y = rng.binomial(1, true_p)
@@ -144,10 +131,7 @@ def test_isotonic_calibration_reduces_calibration_error():
 
 # ------------------------------------------------------------- risk banding
 def test_quantile_bands_fill_every_tier():
-    """
-    The failure absolute cutoffs caused: a calibrated model whose scores
-    never exceed 0.75 left 'critical' permanently empty.
-    """
+    """Quantile bands fill every tier even when no score exceeds 0.75."""
     rng = np.random.default_rng(5)
     probs = rng.beta(2, 8, 5000)                   # nothing above ~0.6
     bands = assign_risk_bands_by_quantile(

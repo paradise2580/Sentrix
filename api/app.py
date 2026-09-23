@@ -1,21 +1,13 @@
 """
-api/app.py
+FastAPI app. Endpoints only read precomputed results and call existing
+modules; no model runs at request time.
 
-Role
-----
-Thin routing layer exposing SENTRIX's intelligence over HTTP. Every
-endpoint CALLS a module built in earlier phases — it never implements
-model, database, or RAG logic itself. This separation is what lets the
-Streamlit dashboard, or any other client, consume the same
-predictions without duplicating logic.
-
-Endpoints
----------
-GET  /health              — liveness check, reports which model is live
-GET  /sellers              — all sellers with their current risk score
-GET  /explain/{seller_id}  — SHAP explanation for one seller
-POST /chat                 — RAG-grounded natural-language Q&A
-GET  /metrics               — the model comparison table
+GET  /health              liveness + which model is live
+GET  /sellers             sellers with risk score and band
+GET  /explain/{seller_id} SHAP drivers for one seller
+GET  /summary             dashboard KPIs
+GET  /metrics             model comparison table
+POST /chat                RAG question answering
 
 Run with:
     uvicorn api.app:app --reload --port 8000
@@ -47,8 +39,7 @@ app = FastAPI(
     version=cfg["project"]["version"],
 )
 
-# Permissive CORS for local development — the Streamlit dashboard and any
-# other client run on a different port and need to call this API directly.
+# Open CORS so the dashboard (on another port) can call the API.
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
@@ -56,20 +47,11 @@ app.add_middleware(
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    """Liveness check. Also reports which model is currently live.
-
-    The serving image deliberately ships without mlflow (see
-    requirements-serve.txt — the registry lives with the training
-    environment, not here), so on a deployed instance the import below
-    always fails. That is expected, not a fault: this falls back to the
-    algorithm name baked into best_model_summary.joblib by
-    generate_predictions.py, which is the same artifact /summary and
-    /metrics already read. Only a training-environment instance with
-    mlflow installed gets the registry-backed "Production"/version label.
     """
-    # Report the ALGORITHM, not the MLflow run id. A 32-character hash
-    # answers "which run" — nobody's question. The useful answer to
-    # "what is live?" is the model family plus its registry version.
+    Liveness check that also reports the live model. Uses the MLflow registry
+    when available, otherwise the name in best_model_summary.joblib (the
+    serving image doesn't include mlflow).
+    """
     algorithm = None
     try:
         summary_path = (get_project_root() / "artifacts" / "evaluation"
@@ -103,11 +85,7 @@ def health():
 
 @app.get("/sellers", response_model=list[SellerRiskResponse])
 def get_sellers(risk_band: str | None = None, limit: int = 500):
-    """
-    All sellers with their current risk score, as written by
-    generate_predictions.py. Optionally filter by risk_band
-    (low / medium / high / critical).
-    """
+    """Sellers with their risk score, optionally filtered by risk_band."""
     try:
         loader = DataLoader()
         predictions = loader.read_table("predictions")
@@ -161,7 +139,7 @@ def explain_seller(seller_id: str):
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
-    """RAG-grounded natural-language question answering over the seller knowledge base."""
+    """RAG question answering over the seller knowledge base."""
     try:
         result = answer_question(request.question, top_k=request.top_k)
         return ChatResponse(**result)
@@ -171,7 +149,7 @@ def chat(request: ChatRequest):
 
 @app.get("/metrics", response_model=ModelMetricsResponse)
 def get_metrics():
-    """The model comparison table — every model's evaluation metrics."""
+    """Evaluation metrics for every model."""
     try:
         eval_dir = get_project_root() / "artifacts" / "evaluation"
         comparison_path = eval_dir / "model_comparison.csv"
@@ -197,11 +175,7 @@ def get_metrics():
 
 @app.get("/summary", response_model=SummaryResponse)
 def get_summary():
-    """
-    Portfolio-level KPIs for the dashboard landing view: band counts, average
-    risk, a 20-bin risk histogram, and per-state aggregates. One small call
-    instead of the client pulling every seller row and aggregating locally.
-    """
+    """Dashboard KPIs: band counts, average risk, risk histogram, per-state stats."""
     try:
         import numpy as np
         loader = DataLoader()
