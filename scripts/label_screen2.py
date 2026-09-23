@@ -9,8 +9,7 @@ rate predictable at all?
   3. Both, plus a forest, for min_forward_orders in {5, 10, 20, 30, 50}.
 
 The answer (the effect exists within a month but doesn't carry into the
-next) is why the project switched to order-level prediction. See
-docs/DESIGN.md.
+next) is why the project switched to order-level prediction.
 
 Run with:
     python scripts/label_screen2.py

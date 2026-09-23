@@ -7,8 +7,6 @@ For each label it reports:
     novol_roc    ROC-AUC using everything except volume (the real signal)
     drift        |train base rate - test base rate| (want small)
 
-Background and results: docs/DESIGN.md.
-
 Run with:
     python scripts/label_screen.py
 """

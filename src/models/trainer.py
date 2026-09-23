@@ -270,7 +270,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train SENTRIX models, stage by stage.")
     parser.add_argument(
         "--stages", nargs="+", choices=list(_STAGES.keys()), default=list(_DEFAULT_STAGES),
-        help="Which training stage(s) to run. Default: all.",
+        help="Which training stage(s) to run. Default: baseline boosting ensemble.",
     )
     args = parser.parse_args()
     train_all_models(stages=args.stages)

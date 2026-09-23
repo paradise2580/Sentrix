@@ -7,7 +7,9 @@ order_approved_at, order_delivered_carrier_date,
 order_delivered_customer_date and delay_days. Seller and state history is
 lagged by `history_lag_days`, because recent orders have no outcome yet.
 
-Why orders and not sellers: see docs/DESIGN.md.
+Orders, not sellers: a seller's late rate doesn't carry over from one
+month to the next (scripts/label_screen2.py), but an order's risk is set by
+things known at purchase. Seller risk is the mean of their orders' risk.
 """
 
 import sys

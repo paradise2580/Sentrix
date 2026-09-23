@@ -43,7 +43,7 @@ with DAG(
 
     rebuild_features = BashOperator(
         task_id="rebuild_features",
-        bash_command=f"cd {PROJECT_ROOT} && {PYTHON_BIN} scripts/build_features.py",
+        bash_command=f"cd {PROJECT_ROOT} && {PYTHON_BIN} scripts/build_order_features.py",
     )
 
     check_drift = BashOperator(

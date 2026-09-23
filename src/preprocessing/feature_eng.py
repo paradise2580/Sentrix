@@ -3,7 +3,7 @@ LEGACY: the seller-day feature table from the earlier seller-level model.
 
 The live model uses preprocessing/order_features.py. This module is kept
 because scripts/label_screen.py and scripts/ablation.py import it to
-reproduce the results that led to the switch (see docs/DESIGN.md).
+reproduce the results that led to the switch to order-level prediction.
 
 Grain: one row per (seller_id, as_of_date). Label: seller's late rate over
 the next 30 days >= late_rate_threshold. Features look only backward

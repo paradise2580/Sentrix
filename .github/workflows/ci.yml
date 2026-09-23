@@ -108,7 +108,7 @@ jobs:
         run: pytest tests/ -v --tb=short
 
       - name: Build feature table
-        run: python scripts/build_features.py
+        run: python scripts/build_order_features.py
 
       - name: Train all models
         run: python -m src.models.trainer --stages baseline boosting ensemble lstm

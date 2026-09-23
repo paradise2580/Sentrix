@@ -145,8 +145,6 @@ Olist CSVs  →  MySQL  →  feature engineering  →  purged temporal split
 
 Airflow orchestrates the pipeline, MLflow tracks every run, DVC versions the data, and Evidently watches for drift in production.
 
-The reasoning behind each design decision, and the experiments that led to modelling orders instead of sellers, are in [docs/DESIGN.md](docs/DESIGN.md).
-
 ---
 
 ## Run it locally
